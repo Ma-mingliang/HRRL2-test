@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<robot name="double_s_wave_terrain">
+
+  <!-- Base link (唯一的根节点) -->
+  <link name="base_link">
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+
+  <!-- Segment 0: Uniform_Track, friction=0.80 -->
+  <link name="segment_0_Uniform_Track">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_Uniform_Track.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <material name="mat_0">
+        <color rgba="0.3 0.3 0.3 1.0"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_Uniform_Track.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <contact>
+        <lateral_friction value="0.8"/>
+        <rolling_friction value="0.08000000000000002"/>
+        <spinning_friction value="0.04000000000000001"/>
+      </contact>
+    </collision>
+    
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="joint_0" type="fixed">
+    <parent link="base_link"/>
+    <child link="segment_0_Uniform_Track"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  
+</robot>

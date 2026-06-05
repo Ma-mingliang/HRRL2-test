@@ -1,0 +1,69 @@
+{
+  "scenario_description": "连续S弯道 - 4个半径8米的急转弯",
+  "total_length": 64.0,
+  "path_width": 2.0,
+  "num_curves": 4,
+  "curve_radius": 8.0,
+  "segments": [
+    {
+      "name": "Curve1_HighFriction",
+      "y_range": [
+        0.0,
+        16.0
+      ],
+      "friction": 0.9,
+      "roughness": 0.0,
+      "color": [
+        0.2,
+        0.8,
+        0.2,
+        1.0
+      ]
+    },
+    {
+      "name": "Curve2_MediumFriction",
+      "y_range": [
+        16.0,
+        32.0
+      ],
+      "friction": 0.6,
+      "roughness": 0.0,
+      "color": [
+        0.8,
+        0.6,
+        0.2,
+        1.0
+      ]
+    },
+    {
+      "name": "Curve3_LowFriction",
+      "y_range": [
+        32.0,
+        48.0
+      ],
+      "friction": 0.3,
+      "roughness": 0.0,
+      "color": [
+        0.7,
+        0.9,
+        1.0,
+        0.8
+      ]
+    },
+    {
+      "name": "Curve4_Recovery",
+      "y_range": [
+        48.0,
+        64.0
+      ],
+      "friction": 0.7,
+      "roughness": 0.0,
+      "color": [
+        0.5,
+        0.5,
+        0.5,
+        1.0
+      ]
+    }
+  ]
+}

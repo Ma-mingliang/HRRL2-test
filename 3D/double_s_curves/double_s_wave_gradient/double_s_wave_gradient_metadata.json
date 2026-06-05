@@ -1,0 +1,132 @@
+{
+  "scenario_description": "双S波浪型弯道 - 圆心在X=0轴上",
+  "total_length": 64.0,
+  "path_width": 2.0,
+  "num_curves": 4,
+  "curve_radius": 8.0,
+  "path_shape": "Double S-curve (centers on X=0 axis)",
+  "key_points": {
+    "start": [
+      0,
+      0
+    ],
+    "curve1_center": [
+      0,
+      8
+    ],
+    "curve1_peak": [
+      8,
+      8
+    ],
+    "connection1": [
+      0,
+      16
+    ],
+    "curve2_center": [
+      0,
+      24
+    ],
+    "curve2_peak": [
+      -8,
+      24
+    ],
+    "connection2": [
+      0,
+      32
+    ],
+    "curve3_center": [
+      0,
+      40
+    ],
+    "curve3_peak": [
+      8,
+      40
+    ],
+    "connection3": [
+      0,
+      48
+    ],
+    "curve4_center": [
+      0,
+      56
+    ],
+    "curve4_peak": [
+      -8,
+      56
+    ],
+    "end": [
+      0,
+      64
+    ]
+  },
+  "segments": [
+    {
+      "name": "Entry_Normal",
+      "y_range": [
+        0,
+        16.0
+      ],
+      "friction": 0.85,
+      "roughness": 0.0,
+      "color": [
+        0.0,
+        0.8,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Gradient_Down",
+      "y_range": [
+        16.0,
+        32.0
+      ],
+      "friction": 0.5,
+      "roughness": 0.0,
+      "color": [
+        0.8,
+        0.8,
+        0.0,
+        1.0
+      ],
+      "friction_transition": {
+        "start": 0.8,
+        "end": 0.3
+      }
+    },
+    {
+      "name": "Ice_Zone",
+      "y_range": [
+        32.0,
+        48.0
+      ],
+      "friction": 0.25,
+      "roughness": 0.08,
+      "color": [
+        0.7,
+        0.9,
+        1.0,
+        0.8
+      ]
+    },
+    {
+      "name": "Recovery_Zone",
+      "y_range": [
+        48.0,
+        64.0
+      ],
+      "friction": 0.75,
+      "roughness": 0.02,
+      "color": [
+        0.0,
+        0.0,
+        0.9,
+        1.0
+      ],
+      "friction_transition": {
+        "start": 0.3,
+        "end": 0.75
+      }
+    }
+  ]
+}

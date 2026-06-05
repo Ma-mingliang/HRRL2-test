@@ -1,0 +1,161 @@
+<?xml version="1.0"?>
+<robot name="double_s_wave_terrain">
+
+  <!-- Base link (唯一的根节点) -->
+  <link name="base_link">
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+
+  <!-- Segment 0: Entry_Normal, friction=0.85 -->
+  <link name="segment_0_Entry_Normal">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_Entry_Normal.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <material name="mat_0">
+        <color rgba="0.0 0.8 0.0 1.0"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_Entry_Normal.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <contact>
+        <lateral_friction value="0.85"/>
+        <rolling_friction value="0.085"/>
+        <spinning_friction value="0.0425"/>
+      </contact>
+    </collision>
+    
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="joint_0" type="fixed">
+    <parent link="base_link"/>
+    <child link="segment_0_Entry_Normal"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  
+  <!-- Segment 1: Gradient_Down, friction=0.50 -->
+  <link name="segment_1_Gradient_Down">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_Gradient_Down.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <material name="mat_1">
+        <color rgba="0.8 0.8 0.0 1.0"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_Gradient_Down.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <contact>
+        <lateral_friction value="0.5"/>
+        <rolling_friction value="0.05"/>
+        <spinning_friction value="0.025"/>
+      </contact>
+    </collision>
+    
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="joint_1" type="fixed">
+    <parent link="base_link"/>
+    <child link="segment_1_Gradient_Down"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  
+  <!-- Segment 2: Ice_Zone, friction=0.25 -->
+  <link name="segment_2_Ice_Zone">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_Ice_Zone.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <material name="mat_2">
+        <color rgba="0.7 0.9 1.0 0.8"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_Ice_Zone.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <contact>
+        <lateral_friction value="0.25"/>
+        <rolling_friction value="0.025"/>
+        <spinning_friction value="0.0125"/>
+      </contact>
+    </collision>
+    
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="joint_2" type="fixed">
+    <parent link="base_link"/>
+    <child link="segment_2_Ice_Zone"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  
+  <!-- Segment 3: Recovery_Zone, friction=0.75 -->
+  <link name="segment_3_Recovery_Zone">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_Recovery_Zone.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <material name="mat_3">
+        <color rgba="0.0 0.0 0.9 1.0"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_Recovery_Zone.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <contact>
+        <lateral_friction value="0.75"/>
+        <rolling_friction value="0.07500000000000001"/>
+        <spinning_friction value="0.037500000000000006"/>
+      </contact>
+    </collision>
+    
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="joint_3" type="fixed">
+    <parent link="base_link"/>
+    <child link="segment_3_Recovery_Zone"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  
+</robot>

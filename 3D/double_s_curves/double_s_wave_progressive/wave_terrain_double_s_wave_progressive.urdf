@@ -1,0 +1,161 @@
+<?xml version="1.0"?>
+<robot name="double_s_wave_terrain">
+
+  <!-- Base link (唯一的根节点) -->
+  <link name="base_link">
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+
+  <!-- Segment 0: S1_Curve1_Easy, friction=0.90 -->
+  <link name="segment_0_S1_Curve1_Easy">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_S1_Curve1_Easy.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <material name="mat_0">
+        <color rgba="0.0 1.0 0.0 1.0"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_S1_Curve1_Easy.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <contact>
+        <lateral_friction value="0.9"/>
+        <rolling_friction value="0.09000000000000001"/>
+        <spinning_friction value="0.045000000000000005"/>
+      </contact>
+    </collision>
+    
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="joint_0" type="fixed">
+    <parent link="base_link"/>
+    <child link="segment_0_S1_Curve1_Easy"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  
+  <!-- Segment 1: S1_Curve2_Easy, friction=0.85 -->
+  <link name="segment_1_S1_Curve2_Easy">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_S1_Curve2_Easy.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <material name="mat_1">
+        <color rgba="0.5 1.0 0.5 1.0"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_S1_Curve2_Easy.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <contact>
+        <lateral_friction value="0.85"/>
+        <rolling_friction value="0.085"/>
+        <spinning_friction value="0.0425"/>
+      </contact>
+    </collision>
+    
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="joint_1" type="fixed">
+    <parent link="base_link"/>
+    <child link="segment_1_S1_Curve2_Easy"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  
+  <!-- Segment 2: S2_Curve1_Hard, friction=0.40 -->
+  <link name="segment_2_S2_Curve1_Hard">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_S2_Curve1_Hard.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <material name="mat_2">
+        <color rgba="1.0 0.5 0.0 1.0"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_S2_Curve1_Hard.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <contact>
+        <lateral_friction value="0.4"/>
+        <rolling_friction value="0.04000000000000001"/>
+        <spinning_friction value="0.020000000000000004"/>
+      </contact>
+    </collision>
+    
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="joint_2" type="fixed">
+    <parent link="base_link"/>
+    <child link="segment_2_S2_Curve1_Hard"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  
+  <!-- Segment 3: S2_Curve2_Extreme, friction=0.25 -->
+  <link name="segment_3_S2_Curve2_Extreme">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_S2_Curve2_Extreme.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <material name="mat_3">
+        <color rgba="1.0 0.0 0.0 0.9"/>
+      </material>
+    </visual>
+    
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="double_s_wave_segment_S2_Curve2_Extreme.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <contact>
+        <lateral_friction value="0.25"/>
+        <rolling_friction value="0.025"/>
+        <spinning_friction value="0.0125"/>
+      </contact>
+    </collision>
+    
+    <inertial>
+      <mass value="0.0"/>
+      <inertia ixx="0.0" ixy="0.0" ixz="0.0" 
+               iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+  
+  <joint name="joint_3" type="fixed">
+    <parent link="base_link"/>
+    <child link="segment_3_S2_Curve2_Extreme"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  
+</robot>

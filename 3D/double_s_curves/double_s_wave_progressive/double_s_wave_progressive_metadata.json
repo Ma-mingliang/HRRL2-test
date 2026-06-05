@@ -1,0 +1,124 @@
+{
+  "scenario_description": "双S波浪型弯道 - 圆心在X=0轴上",
+  "total_length": 64.0,
+  "path_width": 2.0,
+  "num_curves": 4,
+  "curve_radius": 8.0,
+  "path_shape": "Double S-curve (centers on X=0 axis)",
+  "key_points": {
+    "start": [
+      0,
+      0
+    ],
+    "curve1_center": [
+      0,
+      8
+    ],
+    "curve1_peak": [
+      8,
+      8
+    ],
+    "connection1": [
+      0,
+      16
+    ],
+    "curve2_center": [
+      0,
+      24
+    ],
+    "curve2_peak": [
+      -8,
+      24
+    ],
+    "connection2": [
+      0,
+      32
+    ],
+    "curve3_center": [
+      0,
+      40
+    ],
+    "curve3_peak": [
+      8,
+      40
+    ],
+    "connection3": [
+      0,
+      48
+    ],
+    "curve4_center": [
+      0,
+      56
+    ],
+    "curve4_peak": [
+      -8,
+      56
+    ],
+    "end": [
+      0,
+      64
+    ]
+  },
+  "segments": [
+    {
+      "name": "S1_Curve1_Easy",
+      "y_range": [
+        0,
+        16.0
+      ],
+      "friction": 0.9,
+      "roughness": 0.0,
+      "color": [
+        0.0,
+        1.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "S1_Curve2_Easy",
+      "y_range": [
+        16.0,
+        32.0
+      ],
+      "friction": 0.85,
+      "roughness": 0.0,
+      "color": [
+        0.5,
+        1.0,
+        0.5,
+        1.0
+      ]
+    },
+    {
+      "name": "S2_Curve1_Hard",
+      "y_range": [
+        32.0,
+        48.0
+      ],
+      "friction": 0.4,
+      "roughness": 0.05,
+      "color": [
+        1.0,
+        0.5,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "S2_Curve2_Extreme",
+      "y_range": [
+        48.0,
+        64.0
+      ],
+      "friction": 0.25,
+      "roughness": 0.1,
+      "color": [
+        1.0,
+        0.0,
+        0.0,
+        0.9
+      ]
+    }
+  ]
+}
