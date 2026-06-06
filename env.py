@@ -932,12 +932,12 @@ class Attitude_control_stage1(gym.Env):
         state_raw = self.__observation_reduction(state)
         current_error = abs(state_raw[0])
         angular_velocity = abs(state_raw[2])
-        progress = min(1.0, self.epoch_num / 80.0)
+        progress = min(1.0, self.epoch_num / 50.0)
         tracking_reward = -min(current_error**2, 2.0)
         bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
-        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
-        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
+        if current_error < 0.005: bonus_reward = 1.0 + 1.0 * progress
+        elif current_error < 0.01: bonus_reward = 0.5 + 0.5 * progress
+        elif current_error < 0.02: bonus_reward = 0.2 + 0.2 * progress
         smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
         improvement_reward = 0.0
         error_reduction = abs(state_last_raw[0]) - current_error
