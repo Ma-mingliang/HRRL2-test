@@ -16,21 +16,42 @@ from stable_baselines3.common.results_plotter import load_results, ts2xy
 
 
 class BestModelCallback(BaseCallback):
-    """Callback that evaluates every N steps and saves the best model by 10-episode average reward."""
+    """Callback that saves the best model by 10-episode average reward.
 
-    def __init__(self, eval_freq: int = 5000, eval_episodes: int = 10, save_path: Optional[Path] = None, verbose: int = 0):
+    Reads episode rewards directly from the training environment's epoch_r_list,
+    which is updated every reset() call. No separate evaluation environment needed.
+    """
+
+    def __init__(self, check_freq: int = 1, last_n: int = 10, save_path: Optional[Path] = None, verbose: int = 0):
         super().__init__(verbose)
-        self.eval_freq = eval_freq
-        self.eval_episodes = eval_episodes
+        self.check_freq = check_freq
+        self.last_n = last_n
         self.save_path = save_path
         self.best_mean_reward = -float("inf")
         self.best_step = 0
+        self.last_episode_count = 0
 
     def _on_step(self) -> bool:
-        if self.n_calls % self.eval_freq == 0:
-            mean_reward = self._evaluate()
+        # Access training environment
+        env = self.training_env.envs[0]
+        # Unwrap Monitor wrapper if present
+        while hasattr(env, 'env'):
+            env = env.env
+
+        epoch_r_list = getattr(env, 'epoch_r_list', None)
+        if epoch_r_list is None:
+            return True
+
+        current_count = len(epoch_r_list)
+        # Only check when new episodes have completed
+        if current_count > self.last_episode_count and current_count >= self.last_n:
+            self.last_episode_count = current_count
+            recent = epoch_r_list[-self.last_n:]
+            mean_reward = float(np.mean(recent))
+
             if self.verbose:
-                print(f"  [BestModel] step={self.n_calls} mean_reward={mean_reward:.2f} (best={self.best_mean_reward:.2f})")
+                print(f"  [BestModel] ep={current_count} mean_reward={mean_reward:.2f} (best={self.best_mean_reward:.2f})")
+
             if mean_reward > self.best_mean_reward:
                 self.best_mean_reward = mean_reward
                 self.best_step = self.n_calls
@@ -38,28 +59,8 @@ class BestModelCallback(BaseCallback):
                     self.save_path.parent.mkdir(parents=True, exist_ok=True)
                     self.model.save(str(self.save_path))
                     if self.verbose:
-                        print(f"  [BestModel] Saved new best model at step {self.n_calls}")
+                        print(f"  [BestModel] Saved new best model (ep {current_count}, reward={mean_reward:.2f})")
         return True
-
-    def _evaluate(self) -> float:
-        import importlib
-        import env as env_module
-        importlib.reload(env_module)
-
-        rewards = []
-        for _ in range(self.eval_episodes):
-            env = env_module.Attitude_control_stage1(render=False)
-            obs, _ = env.reset()
-            done = False
-            total_r = 0.0
-            while not done:
-                action, _ = self.model.predict(obs, deterministic=True)
-                obs, reward, terminated, truncated, _ = env.step(action)
-                total_r += reward
-                done = terminated or truncated
-            rewards.append(total_r)
-            env.close()
-        return float(np.mean(rewards))
 
 
 class ModelEvaluator:
