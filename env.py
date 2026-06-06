@@ -928,7 +928,7 @@ class Attitude_control_stage1(gym.Env):
         return np.array([dis_angle, theta0, w0, v])
 
     def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-            """Enhanced potential-based reward shaping with progress-based improvements"""
+            """Potential-based reward shaping with constant bias optimization from research paper"""
             state_last_raw = self.__observation_reduction(state_last)
             state_raw = self.__observation_reduction(state)
 
@@ -950,14 +950,18 @@ class Attitude_control_stage1(gym.Env):
             elif current_error < 0.02:
                 bonus_reward = 0.2
 
-            # 3. Research innovation: Potential-based reward shaping (γΦ(s') - Φ(s))
-            # Use absolute error for potential function to match template
+            # 3. Research innovation: Potential-based reward shaping with constant bias
+            # Implementation of formula: F(s,a,s') = γΦ(s') - Φ(s)
+            # With bias optimization: Φ_new(s) = Φ(s) + b
             gamma = 0.99
-            k_phi = 3.0  # Slightly increased scaling for stronger signal
+            k_phi = 3.0  # Scaling factor
 
-            # Compute potential function: Φ(s) = -|e_t|
-            phi_current = -current_error
-            phi_last = -last_error
+            # Add constant bias to improve sample efficiency (from paper)
+            b = 0.1  # Constant bias value
+
+            # Compute potential function with bias: Φ(s) = -|e_t| + b
+            phi_current = -current_error + b
+            phi_last = -last_error + b
 
             # Potential-based shaping: F = γΦ(s') - Φ(s)
             progress_shaping = gamma * phi_current - phi_last
@@ -965,11 +969,10 @@ class Attitude_control_stage1(gym.Env):
             # Research template: tracking_improvement = |e_t| - |e_t1|
             tracking_improvement = last_error - current_error  # Positive when error decreases
 
-            # Combine with scaling (using progress_shaping which is γΦ(s') - Φ(s))
+            # Combine with scaling
             improvement_reward = k_phi * progress_shaping
 
             # 4. Enhanced progress tracking for subtask decomposition
-            # Track cumulative progress over episode
             if not hasattr(self, 'cumulative_progress'):
                 self.cumulative_progress = 0.0
 
@@ -978,7 +981,7 @@ class Attitude_control_stage1(gym.Env):
 
             # Progress-based bonus for sustained improvement
             progress_bonus = 0.0
-            if self.step_num > 0 and hasattr(self, 'step_num'):
+            if self.step_num > 0:
                 # Average progress per step (normalized by step count)
                 avg_progress = self.cumulative_progress / max(self.step_num, 1)
 
@@ -1005,13 +1008,13 @@ class Attitude_control_stage1(gym.Env):
 
             # 8. Learning progress reward (decays over time)
             learning_progress = 0.0
-            if hasattr(self, 'step_num') and self.step_num > 0:
+            if self.step_num > 0:
                 progress_factor = 1.0 - min(self.step_num / self.max_step_num, 1.0)
                 learning_progress = 0.1 * progress_factor
 
             # 9. Terminal condition bonus for long survival
             survival_bonus = 0.0
-            if hasattr(self, 'step_num') and self.step_num > 800:  # Survived most of episode
+            if self.step_num > 800:  # Survived most of episode
                 survival_bonus = 0.5
 
             # 10. Risk gate: reduce potential-based reward when error is dangerously high
