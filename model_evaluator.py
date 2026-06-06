@@ -9,9 +9,57 @@ from typing import Optional
 import numpy as np
 import torch
 from stable_baselines3 import TD3
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.noise import NormalActionNoise
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.results_plotter import load_results, ts2xy
+
+
+class BestModelCallback(BaseCallback):
+    """Callback that evaluates every N steps and saves the best model by 10-episode average reward."""
+
+    def __init__(self, eval_freq: int = 5000, eval_episodes: int = 10, save_path: Optional[Path] = None, verbose: int = 0):
+        super().__init__(verbose)
+        self.eval_freq = eval_freq
+        self.eval_episodes = eval_episodes
+        self.save_path = save_path
+        self.best_mean_reward = -float("inf")
+        self.best_step = 0
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.eval_freq == 0:
+            mean_reward = self._evaluate()
+            if self.verbose:
+                print(f"  [BestModel] step={self.n_calls} mean_reward={mean_reward:.2f} (best={self.best_mean_reward:.2f})")
+            if mean_reward > self.best_mean_reward:
+                self.best_mean_reward = mean_reward
+                self.best_step = self.n_calls
+                if self.save_path:
+                    self.save_path.parent.mkdir(parents=True, exist_ok=True)
+                    self.model.save(str(self.save_path))
+                    if self.verbose:
+                        print(f"  [BestModel] Saved new best model at step {self.n_calls}")
+        return True
+
+    def _evaluate(self) -> float:
+        import importlib
+        import env as env_module
+        importlib.reload(env_module)
+
+        rewards = []
+        for _ in range(self.eval_episodes):
+            env = env_module.Attitude_control_stage1(render=False)
+            obs, _ = env.reset()
+            done = False
+            total_r = 0.0
+            while not done:
+                action, _ = self.model.predict(obs, deterministic=True)
+                obs, reward, terminated, truncated, _ = env.step(action)
+                total_r += reward
+                done = terminated or truncated
+            rewards.append(total_r)
+            env.close()
+        return float(np.mean(rewards))
 
 
 class ModelEvaluator:
@@ -24,9 +72,12 @@ class ModelEvaluator:
     def train_model(self, timesteps: int, save_path: Optional[Path] = None) -> Optional[dict]:
         """Train a TD3 model and return training metrics + save best model.
 
+        Uses BestModelCallback to save the model with highest 10-episode average reward
+        during training, not just the final model.
+
         Args:
             timesteps: Number of training timesteps.
-            save_path: Path to save the trained model (optional).
+            save_path: Path to save the best model (optional).
 
         Returns:
             Dict with training metrics or None if failed.
@@ -56,12 +107,20 @@ class ModelEvaluator:
                 gradient_steps=-1, policy_delay=2, seed=42, verbose=0
             )
 
+            # Setup best model callback (eval every 5000 steps, 10 episodes)
+            callback = None
+            if save_path:
+                callback = BestModelCallback(
+                    eval_freq=5000, eval_episodes=10,
+                    save_path=save_path, verbose=1
+                )
+
             t0 = time.time()
-            model.learn(total_timesteps=timesteps)
+            model.learn(total_timesteps=timesteps, callback=callback)
             elapsed = time.time() - t0
 
-            # Save model if path provided
-            if save_path:
+            # If no save_path, save final model
+            if save_path and not save_path.exists():
                 save_path.parent.mkdir(parents=True, exist_ok=True)
                 model.save(str(save_path))
 
@@ -81,6 +140,10 @@ class ModelEvaluator:
                 "training_time_s": round(elapsed, 1),
                 "timesteps": timesteps,
             }
+
+            if callback:
+                metrics["best_eval_reward"] = callback.best_mean_reward
+                metrics["best_eval_step"] = callback.best_step
 
             env_monitored.close()
             self._clean_logs(log_dir)
