@@ -928,41 +928,78 @@ class Attitude_control_stage1(gym.Env):
         return np.array([dis_angle, theta0, w0, v])
 
     def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        """改进的奖励函数"""
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        
-        # 1. 核心跟踪奖励
-        max_penalty = 2.0
-        tracking_reward = -min(current_error**2, max_penalty)
-        
-        # 2. 高精度奖励
-        bonus_reward = 0.0
-        if current_error < 0.005:
-            bonus_reward = 1.0
-        elif current_error < 0.01:
-            bonus_reward = 0.5
-        elif current_error < 0.02:
-            bonus_reward = 0.2
-        
-        # 3. 平顺性惩罚
-        smoothness_penalty = -0.05 * angular_velocity
-        
-        # 4. 改进奖励
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        
-        # 5. 直接控制动作惩罚，鼓励车把输出平顺且不过度打角
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        
-        return reward
+            """改进的奖励函数 - 基于潜在函数奖励塑形"""
+            state_last_raw = self.__observation_reduction(state_last)
+            state_raw = self.__observation_reduction(state)
+
+            current_error = abs(state_raw[0])  # dis_angle (tilt from vertical)
+            angular_velocity = abs(state_raw[2])  # w0
+            last_error = abs(state_last_raw[0])
+
+            # 1. 核心跟踪奖励 (基于当前误差)
+            max_penalty = 2.0
+            tracking_reward = -min(current_error**2, max_penalty)
+
+            # 2. 高精度奖励
+            bonus_reward = 0.0
+            if current_error < 0.005:
+                bonus_reward = 1.0
+            elif current_error < 0.01:
+                bonus_reward = 0.5
+            elif current_error < 0.02:
+                bonus_reward = 0.2
+
+            # 3. 平顺性惩罚 (基于角速度)
+            smoothness_penalty = -0.05 * angular_velocity
+
+            # 4. 基于潜在函数的奖励塑形
+            # 潜在函数: Φ(s) = -k * |error| (误差越小，潜在值越高)
+            # 奖励塑形项: F = γ * Φ(s') - Φ(s)
+            # 这里使用折扣因子γ=0.99来平衡当前和未来状态的潜在值
+            gamma = 0.99  # 潜在函数的折扣因子
+            potential_scale = 0.5  # 潜在函数缩放因子
+
+            # 当前状态的潜在值
+            phi_current = -potential_scale * current_error
+            # 上一状态的潜在值
+            phi_last = -potential_scale * last_error
+
+            # 潜在函数奖励塑形项
+            potential_shaping = gamma * phi_current - phi_last
+
+            # 5. 改进奖励 (替代直接计算误差减少量)
+            # 使用潜在函数差值作为改进奖励
+            improvement_reward = potential_shaping
+
+            # 6. 直接控制动作惩罚，鼓励车把输出平顺且不过度打角
+            action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
+
+            # 7. 安全边界奖励 (防止倾倒)
+            safety_bonus = 0.0
+            if current_error > 0.8:  # 接近倾倒
+                safety_bonus = -2.0 * (current_error - 0.8)
+            elif current_error < 0.05:  # 非常平衡
+                safety_bonus = 0.5
+
+            # 8. 学习进度奖励 (随时间衰减，鼓励长期稳定)
+            learning_progress = 0.0
+            if hasattr(self, 'step_num') and self.step_num > 0:
+                # 随着步数增加，奖励逐渐衰减
+                progress_factor = 1.0 - min(self.step_num / self.max_step_num, 1.0)
+                learning_progress = 0.1 * progress_factor
+
+            # 计算总奖励
+            reward = (tracking_reward + bonus_reward + smoothness_penalty + 
+                     improvement_reward + action_penalty + safety_bonus + learning_progress)
+
+            # 确保奖励是有限的浮点数，防止数值不稳定
+            if math.isnan(reward) or math.isinf(reward):
+                reward = 0.0
+
+            # 限制奖励范围，避免梯度爆炸
+            reward = max(-100.0, min(100.0, reward))
+
+            return reward
 
     def reset(self, seed=None, options=None):
         """重置环境"""
