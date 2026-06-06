@@ -932,30 +932,23 @@ class Attitude_control_stage1(gym.Env):
         state_raw = self.__observation_reduction(state)
         current_error = abs(state_raw[0])
         angular_velocity = abs(state_raw[2])
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
+        if current_error > 0.05:
+            tracking_reward = -4.0 * current_error ** 2
+            smoothness_penalty = -0.02 * angular_velocity
+            bonus_reward = 0.0
+        elif current_error > 0.02:
+            tracking_reward = -3.0 * current_error ** 2
+            smoothness_penalty = -0.05 * angular_velocity
+            bonus_reward = 0.3
+        else:
+            tracking_reward = -6.0 * current_error ** 2
+            smoothness_penalty = -0.12 * angular_velocity
+            bonus_reward = 1.5 if current_error < 0.005 else 0.8
         improvement_reward = 0.0
         error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
+        if error_reduction > 0: improvement_reward = 0.4 * error_reduction
         action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        # C1: sustained precision milestone bonus
-        if not hasattr(self, '_precise_steps'):
-            self._precise_steps = 0
-        if current_error < 0.01:
-            self._precise_steps += 1
-        else:
-            self._precise_steps = 0
-        milestone_bonus = 0.0
-        if self._precise_steps >= 50: milestone_bonus = 2.0
-        elif self._precise_steps >= 20: milestone_bonus = 1.0
-        elif self._precise_steps >= 10: milestone_bonus = 0.3
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + milestone_bonus
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
         return reward
 
     def reset(self, seed=None, options=None):
