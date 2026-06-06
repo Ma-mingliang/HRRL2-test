@@ -476,13 +476,15 @@ def restore_env():
 def apply_reward_modification(mod: dict) -> bool:
     """Replace __calculate_reward method in env.py with the modification code."""
     content = ENV_FILE.read_text(encoding="utf-8")
-    # Find the __calculate_reward method
+    # Find the __calculate_reward method (Stage 1 only, not Stage 3)
     pattern = r'(    def __calculate_reward\(self, state_last, state, target_handle_angle=0\.0\):.*?)(?=\n    def |\nclass |\Z)'
     match = re.search(pattern, content, re.DOTALL)
     if not match:
         log("ERROR: Could not find __calculate_reward method")
         return False
-    new_content = content[:match.start()] + mod["code"].strip() + "\n" + content[match.end():]
+    # Strip only leading/trailing newlines, preserve indentation
+    new_code = mod["code"].strip("\n")
+    new_content = content[:match.start()] + new_code + "\n" + content[match.end():]
     ENV_FILE.write_text(new_content, encoding="utf-8")
     return True
 
