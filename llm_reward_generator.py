@@ -100,6 +100,9 @@ class LLMRewardGenerator:
 7. Do NOT import any modules.
 8. Do NOT modify any other methods or class attributes.
 9. Keep the indentation consistent with class method (4 spaces indent).
+10. CRITICAL: Always ensure the reward is a finite float. Add `if math.isnan(reward) or math.isinf(reward): reward = 0.0` before returning.
+11. CRITICAL: Avoid division by zero. Use `max(denominator, 1e-8)` or check before dividing.
+12. CRITICAL: Keep reward values in reasonable range [-100, 100] per step to avoid numerical instability.
 
 ## Output Format
 Return the complete `__calculate_reward` method in a ```python ... ``` block."""

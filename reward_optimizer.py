@@ -342,11 +342,25 @@ def main():
         log("FATAL: Baseline training failed")
         return 1
 
-    # Quick eval baseline
+    # Quick eval baseline for completion rate
     baseline_eval = evaluator.quick_evaluate(TIMESTEPS_FULL)
     if baseline_eval:
         baseline["completion_rate"] = baseline_eval.get("completion_rate", 0)
+
+    # Full eval baseline for comprehensive score
+    baseline_model_path_tmp = RESULTS_DIR / "baseline_eval_tmp.zip"
+    evaluator.train_model(TIMESTEPS_FULL, baseline_model_path_tmp)
+    baseline_full_eval = evaluator.evaluate_model(baseline_model_path_tmp)
+    if baseline_full_eval:
+        baseline["completion_rate"] = baseline_full_eval.get("completion_rate", baseline.get("completion_rate", 0))
+        baseline["comprehensive_score"] = baseline_full_eval.get("comprehensive_score", 0)
+        baseline["accuracy"] = baseline_full_eval.get("accuracy", 0)
+        baseline["stability"] = baseline_full_eval.get("stability", 0)
+        baseline["efficiency"] = baseline_full_eval.get("efficiency", 0)
+    else:
         baseline["comprehensive_score"] = 0.5 * 0.5 + 0.3 * 0.5 + 0.2 * baseline.get("completion_rate", 0)
+    if baseline_model_path_tmp.exists():
+        baseline_model_path_tmp.unlink()
 
     log(f"Baseline: reward={baseline['mean_reward']:.2f}, "
         f"episodes={baseline['total_episodes']}, time={baseline['training_time_s']:.0f}s")
