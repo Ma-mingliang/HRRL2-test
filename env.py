@@ -928,99 +928,91 @@ class Attitude_control_stage1(gym.Env):
         return np.array([dis_angle, theta0, w0, v])
 
     def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-                """Potential-based reward shaping using tracking error improvement"""
-                state_last_raw = self.__observation_reduction(state_last)
-                state_raw = self.__observation_reduction(state)
+                    """Potential-based reward shaping with conservative potential function"""
+                    state_last_raw = self.__observation_reduction(state_last)
+                    state_raw = self.__observation_reduction(state)
 
-                current_error = abs(state_raw[0])  # dis_angle (tilt from vertical)
-                angular_velocity = state_raw[2]  # w0 (can be negative)
-                last_error = abs(state_last_raw[0])
-                last_angular_velocity = state_last_raw[2]
+                    current_error = abs(state_raw[0])  # dis_angle (tilt from vertical)
+                    angular_velocity = state_raw[2]  # w0 (can be negative)
+                    last_error = abs(state_last_raw[0])
+                    last_angular_velocity = state_last_raw[2]
 
-                # 1. Core tracking reward (based on current error)
-                max_penalty = 2.0
-                tracking_reward = -min(current_error**2, max_penalty)
+                    # 1. Core tracking reward (based on current error)
+                    max_penalty = 2.0
+                    tracking_reward = -min(current_error**2, max_penalty)
 
-                # 2. High precision bonus
-                bonus_reward = 0.0
-                if current_error < 0.005:
-                    bonus_reward = 1.0
-                elif current_error < 0.01:
-                    bonus_reward = 0.5
-                elif current_error < 0.02:
-                    bonus_reward = 0.2
+                    # 2. High precision bonus
+                    bonus_reward = 0.0
+                    if current_error < 0.005:
+                        bonus_reward = 1.0
+                    elif current_error < 0.01:
+                        bonus_reward = 0.5
+                    elif current_error < 0.02:
+                        bonus_reward = 0.2
 
-                # 3. Research innovation: Potential-based reward shaping using error improvement
-                # Implementation: tracking_improvement = |e_t| - |e_t1| (negative when improving)
-                # Apply scaling: reward += k_phi * tracking_improvement
-                k_phi = 3.0  # Scaling factor from research
+                    # 3. Potential-Based Reward Shaping (PBRS) with discount factor
+                    # Use conservative potential function: Phi(s) = -alpha * error (safety-aware)
+                    # Research formula: F(s, a, s') = gamma * Phi(s') - Phi(s)
+                    gamma = 0.99  # Discount factor from research
 
-                # Direct tracking improvement: positive when error decreases
-                tracking_improvement = last_error - current_error
+                    # Conservative potential: higher alpha when near unsafe boundaries
+                    # This creates risk-aware potentials that penalize unsafe states more heavily
+                    alpha = 2.0  # Base scaling
+                    if current_error > 0.5:  # Near tipping point - increase penalty weight
+                        alpha = 4.0 * (1.0 + current_error)  # Escalating penalty
 
-                # Risk-gating: reduce shaping when error is dangerously high
-                risk_gate = 1.0
-                if current_error > 0.5:  # Approaching unsafe region
-                    risk_gate = max(0.2, 1.0 - 1.5 * (current_error - 0.5))
+                    # Calculate potentials with safety-aware scaling
+                    potential_current = -alpha * current_error
+                    potential_last = -alpha * last_error  # Use same alpha for consistency
 
-                improvement_reward = k_phi * tracking_improvement * risk_gate
+                    # PBRS shaped reward: gamma * Phi(s') - Phi(s)
+                    # This preserves optimal policy while providing learning signal
+                    shaped_reward = gamma * potential_current - potential_last
 
-                # 4. Enhanced progress tracking for sustained improvement
-                if not hasattr(self, 'cumulative_progress'):
-                    self.cumulative_progress = 0.0
+                    # Risk-gating: reduce shaping when error is dangerously high
+                    risk_gate = 1.0
+                    if current_error > 0.5:  # Approaching unsafe region
+                        risk_gate = max(0.2, 1.0 - 1.5 * (current_error - 0.5))
 
-                # Update cumulative progress
-                self.cumulative_progress += tracking_improvement
+                    improvement_reward = shaped_reward * risk_gate
 
-                # Progress-based bonus for sustained improvement
-                progress_bonus = 0.0
-                if self.step_num > 0:
-                    # Average progress per step (normalized by step count)
-                    avg_progress = self.cumulative_progress / max(self.step_num, 1)
+                    # 4. Action penalty for smooth control
+                    action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
 
-                    # Reward sustained positive progress
-                    if avg_progress > 0.001:  # Meaningful average progress
-                        progress_bonus = 0.2 * min(avg_progress * 100, 1.0)  # Cap at 1.0
-                    elif avg_progress < -0.001:  # Negative progress (getting worse)
-                        progress_bonus = -0.1 * min(abs(avg_progress) * 100, 0.5)
+                    # 5. Safety boundary reward (gated against unsafe behavior)
+                    safety_bonus = 0.0
+                    if current_error > 0.8:  # Near tipping point
+                        safety_bonus = -2.0 * (current_error - 0.8)
+                    elif current_error < 0.05:  # Very balanced
+                        safety_bonus = 0.5
 
-                # 5. Action penalty for smooth control
-                action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
+                    # 6. Oscillation penalty (excessive angular velocity changes)
+                    oscillation_penalty = 0.0
+                    if abs(angular_velocity) > 5.0:  # Large oscillations
+                        oscillation_penalty = -0.1 * (abs(angular_velocity) - 5.0)
 
-                # 6. Safety boundary reward (gated against unsafe behavior)
-                safety_bonus = 0.0
-                if current_error > 0.8:  # Near tipping point
-                    safety_bonus = -2.0 * (current_error - 0.8)
-                elif current_error < 0.05:  # Very balanced
-                    safety_bonus = 0.5
+                    # 7. Learning progress reward (decays over time)
+                    learning_progress = 0.0
+                    if self.step_num > 0:
+                        progress_factor = 1.0 - min(self.step_num / self.max_step_num, 1.0)
+                        learning_progress = 0.1 * progress_factor
 
-                # 7. Oscillation penalty (excessive angular velocity changes)
-                oscillation_penalty = 0.0
-                if abs(angular_velocity) > 5.0:  # Large oscillations
-                    oscillation_penalty = -0.1 * (abs(angular_velocity) - 5.0)
+                    # 8. Terminal condition bonus for long survival
+                    survival_bonus = 0.0
+                    if self.step_num > 800:  # Survived most of episode
+                        survival_bonus = 0.5
 
-                # 8. Learning progress reward (decays over time)
-                learning_progress = 0.0
-                if self.step_num > 0:
-                    progress_factor = 1.0 - min(self.step_num / self.max_step_num, 1.0)
-                    learning_progress = 0.1 * progress_factor
+                    # Compute total reward
+                    reward = (tracking_reward + bonus_reward + improvement_reward + 
+                             action_penalty + safety_bonus + oscillation_penalty + 
+                             learning_progress + survival_bonus)
 
-                # 9. Terminal condition bonus for long survival
-                survival_bonus = 0.0
-                if self.step_num > 800:  # Survived most of episode
-                    survival_bonus = 0.5
+                    # Ensure finite and bounded reward
+                    if math.isnan(reward) or math.isinf(reward):
+                        reward = 0.0
+                    reward = max(-100.0, min(100.0, reward))
 
-                # Compute total reward
-                reward = (tracking_reward + bonus_reward + improvement_reward + progress_bonus +
-                         action_penalty + safety_bonus + oscillation_penalty + 
-                         learning_progress + survival_bonus)
-
-                # Ensure finite and bounded reward
-                if math.isnan(reward) or math.isinf(reward):
-                    reward = 0.0
-                reward = max(-100.0, min(100.0, reward))
-
-                return reward
+                    return reward
 
     def reset(self, seed=None, options=None):
         """重置环境"""
