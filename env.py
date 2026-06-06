@@ -933,23 +933,18 @@ class Attitude_control_stage1(gym.Env):
         current_error = abs(state_raw[0])
         angular_velocity = abs(state_raw[2])
 
-        # E2: progressive difficulty based on episode count
-        progress = min(1.0, self.epoch_num / 50.0)  # ramps up over 50 episodes
-
         tracking_reward = -min(current_error**2, 2.0)
         bonus_reward = 0.0
-        if current_error < 0.005:
-            bonus_reward = 1.0 + 0.5 * progress  # bonus increases with progress
-        elif current_error < 0.01:
-            bonus_reward = 0.5 + 0.3 * progress
-        elif current_error < 0.02:
-            bonus_reward = 0.2 + 0.1 * progress
-        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
+        if current_error < 0.005: bonus_reward = 1.0
+        elif current_error < 0.01: bonus_reward = 0.5
+        elif current_error < 0.02: bonus_reward = 0.2
+        smoothness_penalty = -0.05 * angular_velocity
         improvement_reward = 0.0
         error_reduction = abs(state_last_raw[0]) - current_error
         if error_reduction > 0:
             improvement_reward = 0.3 * error_reduction
-        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
+        # F1: residual action squared penalty (lambda=0.05)
+        action_penalty = -0.05 * (target_handle_angle / (math.pi / 4)) ** 2
         reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
         return reward
 
