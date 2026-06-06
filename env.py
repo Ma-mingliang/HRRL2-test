@@ -928,40 +928,24 @@ class Attitude_control_stage1(gym.Env):
         return np.array([dis_angle, theta0, w0, v])
 
     def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        """改进的奖励函数"""
         state_last_raw = self.__observation_reduction(state_last)
         state_raw = self.__observation_reduction(state)
-        
         current_error = abs(state_raw[0])
         angular_velocity = abs(state_raw[2])
-        
-        # 1. 核心跟踪奖励
-        max_penalty = 2.0
-        tracking_reward = -min(current_error**2, max_penalty)
-        
-        # 2. 高精度奖励
+
+        tracking_reward = -min(current_error**2, 2.0)
         bonus_reward = 0.0
-        if current_error < 0.005:
-            bonus_reward = 1.0
-        elif current_error < 0.01:
-            bonus_reward = 0.5
-        elif current_error < 0.02:
-            bonus_reward = 0.2
-        
-        # 3. 平顺性惩罚
+        if current_error < 0.005: bonus_reward = 1.0
+        elif current_error < 0.01: bonus_reward = 0.5
+        elif current_error < 0.02: bonus_reward = 0.2
         smoothness_penalty = -0.05 * angular_velocity
-        
-        # 4. 改进奖励
         improvement_reward = 0.0
         error_reduction = abs(state_last_raw[0]) - current_error
         if error_reduction > 0:
             improvement_reward = 0.3 * error_reduction
-        
-        # 5. 直接控制动作惩罚，鼓励车把输出平顺且不过度打角
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        
+        # F1: residual action squared penalty (lambda=0.05)
+        action_penalty = -0.05 * (target_handle_angle / (math.pi / 4)) ** 2
         reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        
         return reward
 
     def reset(self, seed=None, options=None):
