@@ -335,32 +335,25 @@ def main():
         encoding="utf-8"
     )
 
-    # Run baseline
+    # Run baseline — train once, save as best_model_v0.zip
     log("Running baseline training...")
-    baseline = evaluator.train_model(TIMESTEPS_FULL)
+    baseline_model_path = RESULTS_DIR / "best_model_v0.zip"
+    baseline = evaluator.train_model(TIMESTEPS_FULL, save_path=baseline_model_path)
     if not baseline:
         log("FATAL: Baseline training failed")
         return 1
 
-    # Quick eval baseline for completion rate
-    baseline_eval = evaluator.quick_evaluate(TIMESTEPS_FULL)
+    # Evaluate baseline model for comprehensive metrics
+    baseline_eval = evaluator.evaluate_model(baseline_model_path)
     if baseline_eval:
         baseline["completion_rate"] = baseline_eval.get("completion_rate", 0)
-
-    # Full eval baseline for comprehensive score
-    baseline_model_path_tmp = RESULTS_DIR / "baseline_eval_tmp.zip"
-    evaluator.train_model(TIMESTEPS_FULL, baseline_model_path_tmp)
-    baseline_full_eval = evaluator.evaluate_model(baseline_model_path_tmp)
-    if baseline_full_eval:
-        baseline["completion_rate"] = baseline_full_eval.get("completion_rate", baseline.get("completion_rate", 0))
-        baseline["comprehensive_score"] = baseline_full_eval.get("comprehensive_score", 0)
-        baseline["accuracy"] = baseline_full_eval.get("accuracy", 0)
-        baseline["stability"] = baseline_full_eval.get("stability", 0)
-        baseline["efficiency"] = baseline_full_eval.get("efficiency", 0)
+        baseline["comprehensive_score"] = baseline_eval.get("comprehensive_score", 0)
+        baseline["accuracy"] = baseline_eval.get("accuracy", 0)
+        baseline["stability"] = baseline_eval.get("stability", 0)
+        baseline["efficiency"] = baseline_eval.get("efficiency", 0)
     else:
-        baseline["comprehensive_score"] = 0.5 * 0.5 + 0.3 * 0.5 + 0.2 * baseline.get("completion_rate", 0)
-    if baseline_model_path_tmp.exists():
-        baseline_model_path_tmp.unlink()
+        baseline["completion_rate"] = 0
+        baseline["comprehensive_score"] = 0
 
     log(f"Baseline: reward={baseline['mean_reward']:.2f}, "
         f"episodes={baseline['total_episodes']}, time={baseline['training_time_s']:.0f}s")
