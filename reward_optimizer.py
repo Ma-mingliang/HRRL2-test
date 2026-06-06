@@ -19,6 +19,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -486,7 +487,7 @@ def apply_reward_modification(mod: dict) -> bool:
     return True
 
 
-def train_and_evaluate(timesteps: int) -> dict | None:
+def train_and_evaluate(timesteps: int) -> Optional[dict]:
     """Train TD3 and return metrics from last 20 episodes."""
     try:
         # Import fresh env module
@@ -607,7 +608,7 @@ def update_changelog(version: int, mod: dict, metrics: dict, baseline_metrics: d
         f.write(entry)
 
 
-def run_baseline(timesteps: int) -> dict | None:
+def run_baseline(timesteps: int) -> Optional[dict]:
     """Run baseline training with original reward function."""
     log("Running baseline training...")
     metrics = train_and_evaluate(timesteps)
