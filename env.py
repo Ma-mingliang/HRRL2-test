@@ -928,7 +928,7 @@ class Attitude_control_stage1(gym.Env):
         return np.array([dis_angle, theta0, w0, v])
 
     def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-            """Potential-based reward shaping with enhanced state-dependent potential function"""
+            """Enhanced potential-based reward shaping with progress-based improvements"""
             state_last_raw = self.__observation_reduction(state_last)
             state_raw = self.__observation_reduction(state)
 
@@ -950,53 +950,75 @@ class Attitude_control_stage1(gym.Env):
             elif current_error < 0.02:
                 bonus_reward = 0.2
 
-            # 3. Enhanced potential-based reward shaping (key innovation from paper)
-            # Potential function: Φ(s) = -k1*error² - k2*angular_velocity²
-            # This encourages both error reduction and damping of oscillations
+            # 3. Progress-based reward shaping (research innovation)
+            # Key innovation: Use progress (improvement in error) as shaping signal
             gamma = 0.99
-            k1 = 2.0  # Weight for error
-            k2 = 0.3  # Weight for angular velocity
+            k_phi = 2.0  # Scaling factor for progress-based shaping
 
-            # Current state potential (normalized to reasonable range)
-            phi_current = -(k1 * current_error**2 + k2 * (angular_velocity/10.0)**2)
+            # Compute progress/improvement in error
+            # Using absolute error improvement: progress = |e_t-1| - |e_t|
+            tracking_improvement = last_error - current_error  # Positive when error decreases
 
-            # Last state potential
-            phi_last = -(k1 * last_error**2 + k2 * (last_angular_velocity/10.0)**2)
+            # Apply potential-based shaping: F = γ*Φ(s') - Φ(s)
+            # Here, Φ(s) is the progress potential function
+            progress_potential_current = -current_error**2  # Quadratic penalty for error
+            progress_potential_last = -last_error**2
 
-            # Potential-based shaping term: F = γ*Φ(s') - Φ(s)
-            potential_shaping = gamma * phi_current - phi_last
+            # Progress-based shaping term
+            progress_shaping = gamma * progress_potential_current - progress_potential_last
 
-            # Scale to reasonable range
-            improvement_reward = 0.5 * potential_shaping
+            # Combine progress improvement with potential shaping
+            # This gives the agent credit for both absolute improvement and potential-based progress
+            improvement_reward = k_phi * (tracking_improvement + progress_shaping)
 
-            # 4. Action penalty for smooth control
+            # 4. Enhanced progress tracking for subtask decomposition
+            # Track cumulative progress over episode
+            if not hasattr(self, 'cumulative_progress'):
+                self.cumulative_progress = 0.0
+
+            # Update cumulative progress
+            self.cumulative_progress += tracking_improvement
+
+            # Progress-based bonus for sustained improvement
+            progress_bonus = 0.0
+            if self.step_num > 0 and hasattr(self, 'step_num'):
+                # Average progress per step (normalized by step count)
+                avg_progress = self.cumulative_progress / max(self.step_num, 1)
+
+                # Reward sustained positive progress
+                if avg_progress > 0.001:  # Meaningful average progress
+                    progress_bonus = 0.2 * min(avg_progress * 100, 1.0)  # Cap at 1.0
+                elif avg_progress < -0.001:  # Negative progress (getting worse)
+                    progress_bonus = -0.1 * min(abs(avg_progress) * 100, 0.5)
+
+            # 5. Action penalty for smooth control
             action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
 
-            # 5. Safety boundary reward
+            # 6. Safety boundary reward
             safety_bonus = 0.0
             if current_error > 0.8:  # Near tipping point
                 safety_bonus = -2.0 * (current_error - 0.8)
             elif current_error < 0.05:  # Very balanced
                 safety_bonus = 0.5
 
-            # 6. Oscillation penalty (excessive angular velocity changes)
+            # 7. Oscillation penalty (excessive angular velocity changes)
             oscillation_penalty = 0.0
             if abs(angular_velocity) > 5.0:  # Large oscillations
                 oscillation_penalty = -0.1 * (abs(angular_velocity) - 5.0)
 
-            # 7. Learning progress reward (decays over time)
+            # 8. Learning progress reward (decays over time)
             learning_progress = 0.0
             if hasattr(self, 'step_num') and self.step_num > 0:
                 progress_factor = 1.0 - min(self.step_num / self.max_step_num, 1.0)
                 learning_progress = 0.1 * progress_factor
 
-            # 8. Terminal condition bonus for long survival
+            # 9. Terminal condition bonus for long survival
             survival_bonus = 0.0
             if hasattr(self, 'step_num') and self.step_num > 800:  # Survived most of episode
                 survival_bonus = 0.5
 
             # Compute total reward
-            reward = (tracking_reward + bonus_reward + improvement_reward + 
+            reward = (tracking_reward + bonus_reward + improvement_reward + progress_bonus +
                      action_penalty + safety_bonus + oscillation_penalty + 
                      learning_progress + survival_bonus)
 
