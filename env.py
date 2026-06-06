@@ -950,22 +950,22 @@ class Attitude_control_stage1(gym.Env):
             elif current_error < 0.02:
                 bonus_reward = 0.2
 
-            # 3. Research innovation: Potential-based reward shaping
-            # Key insight: Use γΦ(s') - Φ(s) where Φ(s) = -|e_t|^2
+            # 3. Research innovation: Potential-based reward shaping (γΦ(s') - Φ(s))
+            # Use absolute error for potential function to match template
             gamma = 0.99
-            k_phi = 2.5  # Increased scaling factor for potential-based shaping
+            k_phi = 3.0  # Slightly increased scaling for stronger signal
 
-            # Compute potential function: Φ(s) = -error^2
-            phi_current = -current_error**2
-            phi_last = -last_error**2
+            # Compute potential function: Φ(s) = -|e_t|
+            phi_current = -current_error
+            phi_last = -last_error
 
             # Potential-based shaping: F = γΦ(s') - Φ(s)
             progress_shaping = gamma * phi_current - phi_last
 
-            # Also track absolute improvement for monitoring
+            # Research template: tracking_improvement = |e_t| - |e_t1|
             tracking_improvement = last_error - current_error  # Positive when error decreases
 
-            # Combine with scaling
+            # Combine with scaling (using progress_shaping which is γΦ(s') - Φ(s))
             improvement_reward = k_phi * progress_shaping
 
             # 4. Enhanced progress tracking for subtask decomposition
@@ -991,7 +991,7 @@ class Attitude_control_stage1(gym.Env):
             # 5. Action penalty for smooth control
             action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
 
-            # 6. Safety boundary reward
+            # 6. Safety boundary reward (gated against unsafe behavior)
             safety_bonus = 0.0
             if current_error > 0.8:  # Near tipping point
                 safety_bonus = -2.0 * (current_error - 0.8)
@@ -1014,8 +1014,13 @@ class Attitude_control_stage1(gym.Env):
             if hasattr(self, 'step_num') and self.step_num > 800:  # Survived most of episode
                 survival_bonus = 0.5
 
-            # Compute total reward
-            reward = (tracking_reward + bonus_reward + improvement_reward + progress_bonus +
+            # 10. Risk gate: reduce potential-based reward when error is dangerously high
+            risk_gate = 1.0
+            if current_error > 0.5:  # Approaching unsafe region
+                risk_gate = max(0.2, 1.0 - 1.5 * (current_error - 0.5))
+
+            # Compute total reward with risk gating on improvement reward
+            reward = (tracking_reward + bonus_reward + (improvement_reward * risk_gate) + progress_bonus +
                      action_penalty + safety_bonus + oscillation_penalty + 
                      learning_progress + survival_bonus)
 
