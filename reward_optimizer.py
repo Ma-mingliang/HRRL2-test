@@ -1,13 +1,15 @@
 """
-HRRL2 Stage 1 Reward Function Optimizer
-========================================
-Iterative reward optimization using paper pool methods.
-Runs for 5 hours, committing each improved version to git.
+HRRL2 Stage 1 Reward Function Optimizer (LLM-Driven)
+=====================================================
+Universal reward optimization using paper pool + LLM generation.
+Based on Eureka (NVIDIA) best practices.
 
 Usage:
-    conda run -n RL2 python reward_optimizer.py
+    set MIMO_API_KEY=xxx && python reward_optimizer.py
+    or: conda run -n RL2 python reward_optimizer.py
 """
 
+import csv
 import json
 import math
 import os
@@ -22,11 +24,6 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import torch
-from stable_baselines3 import TD3
-from stable_baselines3.common.noise import NormalActionNoise
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.results_plotter import load_results, ts2xy
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config
@@ -34,416 +31,43 @@ from stable_baselines3.common.results_plotter import load_results, ts2xy
 
 PROJECT_ROOT = Path(r"D:\research-agent\HRRL2")
 ENV_FILE = PROJECT_ROOT / "env.py"
-PYTHON = r"E:\Anaconda\envs\RL2\python.exe"
+POOL_DIR = Path(r"D:\research-agent\research_agent\reward_paper_pool")
+WORK_DIR = PROJECT_ROOT / "optimizer_work"
+RESULTS_DIR = PROJECT_ROOT / "optimizer_results"
+
 TOTAL_RUNTIME_HOURS = 5
-TIMESTEPS_PER_ITER = 50000
-IMPROVEMENT_THRESHOLD = 0.02  # 2% improvement to accept
-CATEGORIES_PRIORITY = [
-    "F_residual_aware_reward",
-    "A_potential_based_reward",
-    "B_safety_constraint_reward",
-    "E_hierarchical_reward",
-    "C_curriculum_subgoal_reward",
-    "D_adaptive_dynamic_reward",
+TIMESTEPS_SCREEN = 30000   # Screening: quick train
+TIMESTEPS_FULL = 50000     # Full: standard train
+EVAL_EPISODES = 50         # Evaluation episodes
+IMPROVEMENT_THRESHOLD = 0.001  # 0.1% improvement to accept
+
+# MIMO API config (from Hermes)
+MIMO_API_KEY = os.environ.get("MIMO_API_KEY", "")
+MIMO_BASE_URL = "https://token-plan-sgp.xiaomimimo.com/v1"
+MIMO_MODEL = "mimo-v2.5-pro"
+
+# Category priority for phase-based flow
+CATEGORY_PRIORITY = [
+    ("F_residual_aware_reward", "S"),
+    ("E_hierarchical_reward", "S"),
+    ("A_potential_based_reward", "S"),
+    ("B_safety_constraint_reward", "S"),
+    ("C_curriculum_subgoal_reward", "A"),
+    ("D_adaptive_dynamic_reward", "A"),
+    ("G_llm_reward_generation", "A"),
+    ("H_learned_preference_reward", "B"),
 ]
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Reward Modifications — concrete, tested changes
-# ──────────────────────────────────────────────────────────────────────────────
-
-REWARD_MODIFICATIONS = [
-    # ── Category F: Residual-Aware ──
-    {
-        "id": "F1_residual_action_penalty",
-        "category": "F_residual_aware_reward",
-        "name": "Residual action magnitude penalty",
-        "description": "Penalize large steering angles proportional to squared magnitude (lambda=0.05)",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        # F1: residual action squared penalty (lambda=0.05)
-        action_penalty = -0.05 * (target_handle_angle / (math.pi / 4)) ** 2
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward""",
-    },
-    {
-        "id": "F2_residual_smoothness",
-        "category": "F_residual_aware_reward",
-        "name": "Residual action smoothness penalty",
-        "description": "Penalize change in steering angle between steps (smoothness) + squared action penalty",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        # F2: squared action penalty + smoothness (track prev action)
-        action_penalty = -0.04 * (target_handle_angle / (math.pi / 4)) ** 2
-        if not hasattr(self, '_prev_handle_angle'):
-            self._prev_handle_angle = 0.0
-        delta_action = abs(target_handle_angle - self._prev_handle_angle)
-        smooth_action_penalty = -0.03 * delta_action / (math.pi / 4)
-        self._prev_handle_angle = target_handle_angle
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + smooth_action_penalty
-        return reward""",
-    },
-    {
-        "id": "F3_adaptive_residual_lambda",
-        "category": "F_residual_aware_reward",
-        "name": "Adaptive residual lambda (decreases as error shrinks)",
-        "description": "Residual penalty lambda decreases as tracking improves, encouraging exploration early",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        # F3: adaptive lambda - less penalty when error is small
-        adaptive_lambda = 0.08 * min(current_error / 0.1, 1.0)
-        action_penalty = -adaptive_lambda * (target_handle_angle / (math.pi / 4)) ** 2
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward""",
-    },
-
-    # ── Category A: Potential-Based ──
-    {
-        "id": "A1_potential_shaping",
-        "category": "A_potential_based_reward",
-        "name": "Potential-based reward shaping",
-        "description": "Add gamma*Phi(s') - Phi(s) shaping where Phi = -error^2 (policy invariant)",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        # A1: potential-based shaping: gamma * Phi(s') - Phi(s)
-        # Phi(s) = -error^2, gamma=0.99
-        gamma = 0.99
-        phi_last = -(abs(state_last_raw[0])) ** 2
-        phi_current = -(current_error) ** 2
-        potential_shaping = gamma * phi_current - phi_last
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + 0.1 * potential_shaping
-        return reward""",
-    },
-    {
-        "id": "A2_potential_velocity",
-        "category": "A_potential_based_reward",
-        "name": "Potential shaping with velocity component",
-        "description": "Potential function includes both error and velocity: Phi = -(error^2 + 0.1*omega^2)",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        # A2: potential shaping with velocity: Phi = -(error^2 + 0.1*omega^2)
-        gamma = 0.99
-        phi_last = -(abs(state_last_raw[0])) ** 2 - 0.1 * (abs(state_last_raw[2])) ** 2
-        phi_current = -(current_error) ** 2 - 0.1 * (angular_velocity) ** 2
-        potential_shaping = gamma * phi_current - phi_last
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + 0.1 * potential_shaping
-        return reward""",
-    },
-
-    # ── Category B: Safety/Constraint ──
-    {
-        "id": "B1_angular_velocity_penalty",
-        "category": "B_safety_constraint_reward",
-        "name": "Enhanced angular velocity safety penalty",
-        "description": "Quadratic angular velocity penalty (instead of linear) to strongly discourage oscillation",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        # B1: quadratic angular velocity penalty (stronger discouragement of oscillation)
-        smoothness_penalty = -0.1 * angular_velocity ** 2
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward""",
-    },
-    {
-        "id": "B2_tilt_safety_barrier",
-        "category": "B_safety_constraint_reward",
-        "name": "Tilt angle safety barrier",
-        "description": "Exponential penalty that increases sharply as tilt approaches failure threshold (pi/3)",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        tilt_angle = abs(state_raw[1])
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        # B2: safety barrier - exponential penalty as tilt approaches failure
-        failure_threshold = math.pi / 3  # 60 degrees
-        safety_ratio = tilt_angle / failure_threshold
-        if safety_ratio > 0.5:
-            safety_penalty = -2.0 * (safety_ratio - 0.5) ** 2
-        else:
-            safety_penalty = 0.0
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + safety_penalty
-        return reward""",
-    },
-    {
-        "id": "B3_combined_safety",
-        "category": "B_safety_constraint_reward",
-        "name": "Combined safety: barrier + quadratic velocity",
-        "description": "Tilt barrier + quadratic angular velocity penalty + action smoothness",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        tilt_angle = abs(state_raw[1])
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        # B3: quadratic velocity penalty
-        smoothness_penalty = -0.08 * angular_velocity ** 2
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.03 * abs(target_handle_angle) / (math.pi / 4)
-        # Safety barrier
-        failure_threshold = math.pi / 3
-        safety_ratio = tilt_angle / failure_threshold
-        safety_penalty = -1.5 * max(0, safety_ratio - 0.5) ** 2
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + safety_penalty
-        return reward""",
-    },
-
-    # ── Category E: Hierarchical ──
-    {
-        "id": "E1_hierarchical_error_stages",
-        "category": "E_hierarchical_reward",
-        "name": "Hierarchical error-stage reward",
-        "description": "Different reward scales for coarse (>0.05), medium (0.02-0.05), fine (<0.02) error stages",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-
-        # E1: hierarchical reward based on error stage
-        if current_error > 0.05:
-            # Coarse stage: focus on fast convergence
-            tracking_reward = -3.0 * current_error ** 2
-            smoothness_penalty = -0.02 * angular_velocity
-            bonus_reward = 0.0
-        elif current_error > 0.02:
-            # Medium stage: balanced
-            tracking_reward = -2.0 * current_error ** 2
-            smoothness_penalty = -0.05 * angular_velocity
-            bonus_reward = 0.3
-        else:
-            # Fine stage: focus on precision and stability
-            tracking_reward = -5.0 * current_error ** 2
-            smoothness_penalty = -0.1 * angular_velocity
-            bonus_reward = 1.0 if current_error < 0.005 else 0.5
-
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward""",
-    },
-    {
-        "id": "E2_progressive_difficulty",
-        "category": "E_hierarchical_reward",
-        "name": "Progressive difficulty curriculum",
-        "description": "Reward scales increase with episode count (curriculum), early episodes are more forgiving",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-
-        # E2: progressive difficulty based on episode count
-        progress = min(1.0, self.epoch_num / 50.0)  # ramps up over 50 episodes
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005:
-            bonus_reward = 1.0 + 0.5 * progress  # bonus increases with progress
-        elif current_error < 0.01:
-            bonus_reward = 0.5 + 0.3 * progress
-        elif current_error < 0.02:
-            bonus_reward = 0.2 + 0.1 * progress
-        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward""",
-    },
-
-    # ── Category C: Curriculum/Subgoal ──
-    {
-        "id": "C1_subgoal_milestones",
-        "category": "C_curriculum_subgoal_reward",
-        "name": "Subgoal milestone rewards",
-        "description": "Extra bonus for sustained precision (consecutive steps under threshold)",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        # C1: sustained precision milestone bonus
-        if not hasattr(self, '_precise_steps'):
-            self._precise_steps = 0
-        if current_error < 0.01:
-            self._precise_steps += 1
-        else:
-            self._precise_steps = 0
-        milestone_bonus = 0.0
-        if self._precise_steps >= 50: milestone_bonus = 2.0
-        elif self._precise_steps >= 20: milestone_bonus = 1.0
-        elif self._precise_steps >= 10: milestone_bonus = 0.3
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty + milestone_bonus
-        return reward""",
-    },
-
-    # ── Category D: Adaptive/Dynamic ──
-    {
-        "id": "D1_adaptive_weight_combination",
-        "category": "D_adaptive_dynamic_reward",
-        "name": "Adaptive component weights",
-        "description": "Tracking weight increases, smoothness weight decreases as training progresses",
-        "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-
-        # D1: adaptive weights based on episode progress
-        progress = min(1.0, self.epoch_num / 80.0)
-        tracking_weight = 1.0 + 0.5 * progress  # 1.0 -> 1.5
-        smoothness_weight = 0.1 * (1.0 - 0.5 * progress)  # 0.1 -> 0.05
-
-        tracking_reward = -tracking_weight * min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -smoothness_weight * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0:
-            improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward""",
-    },
-]
+ENV_CONTEXT = """Environment: Attitude_control_stage1 (PyBullet bicycle self-balancing)
+- Observation space: [dis_angle, theta0, w0, v] (normalized to [-1, 1])
+- Action space: [handle_angle] (normalized to [-1, 1])
+- __observation_reduction(state): [dis_angle*1.57, theta0*1.57, w0*10, v*5]
+- self.epoch_num: current episode count
+- self.step_num: current step in episode
+- self.max_step_num: 1000 (max steps per episode)
+- self.FAILURE_PENALTY: -10.0
+- self.EARLY_TERMINATION_PENALTY: -20.0
+- Goal: minimize dis_angle (tilt from vertical), keep bicycle balanced"""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -455,120 +79,102 @@ def log(msg: str):
     print(f"[{ts}] {msg}", flush=True)
 
 
-def run_git(args: list[str], cwd: str = None) -> tuple[int, str]:
+def run_git(args: list, cwd: str = None) -> tuple:
     cmd = ["git"] + args
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd or str(PROJECT_ROOT))
     return r.returncode, r.stdout.strip() + r.stderr.strip()
 
 
 def backup_env():
-    """Backup env.py before modification."""
     shutil.copy2(ENV_FILE, ENV_FILE.with_suffix(".py.bak"))
 
 
 def restore_env():
-    """Restore env.py from backup."""
     bak = ENV_FILE.with_suffix(".py.bak")
     if bak.exists():
         shutil.copy2(bak, ENV_FILE)
 
 
-def apply_reward_modification(mod: dict) -> bool:
-    """Replace __calculate_reward method in env.py with the modification code."""
+def get_current_reward_code() -> str:
+    """Extract current __calculate_reward method from env.py."""
     content = ENV_FILE.read_text(encoding="utf-8")
-    # Find the __calculate_reward method (Stage 1 only, not Stage 3)
+    pattern = r'(    def __calculate_reward\(self, state_last, state, target_handle_angle=0\.0\):.*?)(?=\n    def |\nclass |\Z)'
+    match = re.search(pattern, content, re.DOTALL)
+    return match.group(0).strip("\n") if match else ""
+
+
+def apply_reward_code(code: str) -> bool:
+    """Replace __calculate_reward method in env.py."""
+    content = ENV_FILE.read_text(encoding="utf-8")
     pattern = r'(    def __calculate_reward\(self, state_last, state, target_handle_angle=0\.0\):.*?)(?=\n    def |\nclass |\Z)'
     match = re.search(pattern, content, re.DOTALL)
     if not match:
         log("ERROR: Could not find __calculate_reward method")
         return False
-    # Strip only leading/trailing newlines, preserve indentation
-    new_code = mod["code"].strip("\n")
+
+    # Normalize indentation: ensure method starts with 4 spaces (class method level)
+    lines = code.strip("\n").split("\n")
+    if lines:
+        # Find the def line
+        def_idx = None
+        for i, line in enumerate(lines):
+            if line.strip().startswith("def __calculate_reward"):
+                def_idx = i
+                break
+
+        if def_idx is not None:
+            # Get the indentation of the def line
+            def_line = lines[def_idx]
+            current_indent = len(def_line) - len(def_line.lstrip())
+            target_indent = 4  # Class method indentation
+
+            # Calculate difference
+            indent_diff = target_indent - current_indent
+
+            # Apply indentation correction
+            if indent_diff != 0:
+                new_lines = []
+                for line in lines:
+                    if line.strip():  # Non-empty line
+                        current = len(line) - len(line.lstrip())
+                        new_indent = max(0, current + indent_diff)
+                        new_lines.append(" " * new_indent + line.lstrip())
+                    else:
+                        new_lines.append("")
+                code = "\n".join(new_lines)
+
+    new_code = code.strip("\n")
     new_content = content[:match.start()] + new_code + "\n" + content[match.end():]
     ENV_FILE.write_text(new_content, encoding="utf-8")
     return True
 
 
-def train_and_evaluate(timesteps: int) -> Optional[dict]:
-    """Train TD3 and return metrics from last 20 episodes."""
+def check_syntax(code: str) -> Optional[str]:
+    """Check Python syntax of code. Returns error message or None."""
     try:
-        # Import fresh env module
-        import importlib
-        import env as env_module
-        importlib.reload(env_module)
-
-        env_instance = env_module.Attitude_control_stage1(render=False)
-        env_instance.record_flag = 1
-        log_dir = str(PROJECT_ROOT / "model" / "optimizer_logs")
-        os.makedirs(log_dir, exist_ok=True)
-        env_monitored = Monitor(env_instance, log_dir)
-
-        n_actions = env_monitored.action_space.shape[-1]
-        action_noise = NormalActionNoise(
-            mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions)
-        )
-
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        model = TD3(
-            "MlpPolicy", env=env_monitored, device=device,
-            gamma=0.99, learning_rate=0.001, batch_size=128,
-            buffer_size=100000, action_noise=action_noise,
-            learning_starts=128, train_freq=(1, "step"),
-            gradient_steps=-1, policy_delay=2, seed=42, verbose=0
-        )
-
-        t0 = time.time()
-        model.learn(total_timesteps=timesteps)
-        elapsed = time.time() - t0
-
-        # Extract metrics from Monitor logs
-        x, y = ts2xy(load_results(log_dir), "timesteps")
-        if len(y) < 5:
-            log(f"WARNING: Only {len(y)} episodes completed")
-            return None
-
-        last_20 = y[-20:] if len(y) >= 20 else y
-        metrics = {
-            "mean_reward": float(np.mean(last_20)),
-            "std_reward": float(np.std(last_20)),
-            "total_episodes": len(y),
-            "training_time_s": round(elapsed, 1),
-            "timesteps": timesteps,
-        }
-
-        # Clean up
-        env_monitored.close()
-
-        # Remove log files to avoid confusion
-        for f in Path(log_dir).glob("*"):
-            try:
-                f.unlink()
-            except OSError:
-                pass
-
-        return metrics
-
-    except Exception as e:
-        log(f"ERROR in train_and_evaluate: {e}")
-        traceback.print_exc()
+        compile(code, "<reward>", "exec")
         return None
+    except SyntaxError as e:
+        return str(e)
 
 
 def commit_and_push(version: int, mod: dict, metrics: dict, baseline_metrics: dict):
-    """Commit the improved reward function and push to GitHub."""
+    """Commit and push to GitHub."""
     improvement = (metrics["mean_reward"] - baseline_metrics["mean_reward"]) / abs(baseline_metrics["mean_reward"]) * 100
 
     run_git(["add", "env.py"])
     commit_msg = (
-        f"v{version}: {mod['name']}\n\n"
-        f"Category: {mod['category']}\n"
-        f"Modification ID: {mod['id']}\n"
-        f"Description: {mod['description']}\n\n"
-        f"Metrics (last 20 episodes):\n"
+        f"v{version}: {mod.get('name', 'LLM Generated')}\n\n"
+        f"Category: {mod.get('category', 'N/A')}\n"
+        f"Method ID: {mod.get('method_id', 'N/A')}\n"
+        f"Description: {mod.get('description', 'N/A')}\n\n"
+        f"Metrics:\n"
         f"  Mean reward: {metrics['mean_reward']:.2f} (baseline: {baseline_metrics['mean_reward']:.2f})\n"
-        f"  Improvement vs baseline: {improvement:+.1f}%\n"
-        f"  Episodes: {metrics['total_episodes']}\n"
-        f"  Training time: {metrics['training_time_s']:.0f}s"
+        f"  Improvement: {improvement:+.1f}%\n"
+        f"  Completion rate: {metrics.get('completion_rate', 'N/A')}\n"
+        f"  Comprehensive score: {metrics.get('comprehensive_score', 'N/A')}\n"
+        f"  Episodes: {metrics.get('total_episodes', 'N/A')}\n"
+        f"  Training time: {metrics.get('training_time_s', 0):.0f}s"
     )
     run_git(["commit", "-m", commit_msg])
     run_git(["tag", "-f", f"v{version}"])
@@ -576,31 +182,84 @@ def commit_and_push(version: int, mod: dict, metrics: dict, baseline_metrics: di
     log(f"Committed and pushed v{version}")
 
 
-def rollback(version: int, mod: dict, metrics: dict, baseline_metrics: dict):
-    """Rollback to previous env.py."""
-    restore_env()
-    run_git(["checkout", "env.py"])
-    log(f"Rolled back v{version} ({mod['id']}): not better than baseline")
+def save_results_csv(version: int, mod: dict, metrics: dict, baseline_metrics: dict, accepted: bool):
+    """Append results to CSV file."""
+    csv_path = RESULTS_DIR / "optimization_results.csv"
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    improvement = (metrics["mean_reward"] - baseline_metrics["mean_reward"]) / abs(baseline_metrics["mean_reward"]) * 100
+
+    row = {
+        "version": version,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "name": mod.get("name", ""),
+        "category": mod.get("category", ""),
+        "method_id": mod.get("method_id", ""),
+        "description": mod.get("description", ""),
+        "mean_reward": round(metrics["mean_reward"], 2),
+        "std_reward": round(metrics.get("std_reward", 0), 2),
+        "improvement_pct": round(improvement, 1),
+        "completion_rate": round(metrics.get("completion_rate", 0), 3),
+        "comprehensive_score": round(metrics.get("comprehensive_score", 0), 4),
+        "total_episodes": metrics.get("total_episodes", 0),
+        "training_time_s": metrics.get("training_time_s", 0),
+        "accepted": accepted,
+    }
+
+    file_exists = csv_path.exists()
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=row.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def save_results_json(version: int, mod: dict, metrics: dict, baseline_metrics: dict, accepted: bool):
+    """Save detailed results to JSON file."""
+    json_path = RESULTS_DIR / "optimization_results.jsonl"
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    improvement = (metrics["mean_reward"] - baseline_metrics["mean_reward"]) / abs(baseline_metrics["mean_reward"]) * 100
+
+    record = {
+        "version": version,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "name": mod.get("name", ""),
+        "category": mod.get("category", ""),
+        "method_id": mod.get("method_id", ""),
+        "description": mod.get("description", ""),
+        "mean_reward": round(metrics["mean_reward"], 2),
+        "std_reward": round(metrics.get("std_reward", 0), 2),
+        "improvement_pct": round(improvement, 1),
+        "completion_rate": round(metrics.get("completion_rate", 0), 3),
+        "comprehensive_score": round(metrics.get("comprehensive_score", 0), 4),
+        "total_episodes": metrics.get("total_episodes", 0),
+        "training_time_s": metrics.get("training_time_s", 0),
+        "accepted": accepted,
+        "metrics": metrics,
+    }
+
+    with open(json_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def update_changelog(version: int, mod: dict, metrics: dict, baseline_metrics: dict, accepted: bool):
     """Append to CHANGELOG.md."""
     changelog = PROJECT_ROOT / "CHANGELOG.md"
-    if not changelog.exists():
-        changelog.write_text("# HRRL2 Stage 1 Reward Optimization Changelog\n\n", encoding="utf-8")
-
     improvement = (metrics["mean_reward"] - baseline_metrics["mean_reward"]) / abs(baseline_metrics["mean_reward"]) * 100
     status = "ACCEPTED" if accepted else "REJECTED"
 
     entry = (
-        f"## v{version} — {mod['name']} [{status}]\n\n"
-        f"- **Category**: {mod['category']}\n"
-        f"- **ID**: {mod['id']}\n"
-        f"- **Description**: {mod['description']}\n"
+        f"## v{version} — {mod.get('name', 'LLM Generated')} [{status}]\n\n"
+        f"- **Category**: {mod.get('category', 'N/A')}\n"
+        f"- **Method ID**: {mod.get('method_id', 'N/A')}\n"
+        f"- **Description**: {mod.get('description', 'N/A')}\n"
         f"- **Mean Reward**: {metrics['mean_reward']:.2f} "
-        f"(original baseline: {baseline_metrics['mean_reward']:.2f}, change: {improvement:+.1f}%)\n"
-        f"- **Episodes**: {metrics['total_episodes']}\n"
-        f"- **Training Time**: {metrics['training_time_s']:.0f}s\n"
+        f"(baseline: {baseline_metrics['mean_reward']:.2f}, change: {improvement:+.1f}%)\n"
+        f"- **Completion Rate**: {metrics.get('completion_rate', 0):.1%}\n"
+        f"- **Comprehensive Score**: {metrics.get('comprehensive_score', 0):.4f}\n"
+        f"- **Episodes**: {metrics.get('total_episodes', 'N/A')}\n"
+        f"- **Training Time**: {metrics.get('training_time_s', 0):.0f}s\n"
         f"- **Timestamp**: {datetime.now(timezone.utc).isoformat()}\n\n"
     )
 
@@ -608,416 +267,307 @@ def update_changelog(version: int, mod: dict, metrics: dict, baseline_metrics: d
         f.write(entry)
 
 
-def run_baseline(timesteps: int) -> Optional[dict]:
-    """Run baseline training with original reward function."""
-    log("Running baseline training...")
-    metrics = train_and_evaluate(timesteps)
-    if metrics:
-        log(f"Baseline: mean_reward={metrics['mean_reward']:.2f}, "
-            f"episodes={metrics['total_episodes']}, time={metrics['training_time_s']:.0f}s")
-    return metrics
-
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Main Loop
+# Main Optimizer Loop
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
     start_time = time.time()
     end_time = start_time + TOTAL_RUNTIME_HOURS * 3600
 
+    # Validate MIMO API key
+    if not MIMO_API_KEY:
+        # Try to load from Hermes
+        try:
+            hermes_path = Path(r"C:\Users\lenovo_mml\.hermes\auth.json")
+            if hermes_path.exists():
+                with open(hermes_path, encoding="utf-8") as f:
+                    auth = json.load(f)
+                xiaomi = auth.get("credential_pool", {}).get("xiaomi", [{}])[0]
+                api_key = xiaomi.get("access_token", "")
+                base_url = xiaomi.get("base_url", MIMO_BASE_URL)
+                if api_key:
+                    os.environ["MIMO_API_KEY"] = api_key
+                    log(f"Loaded MIMO API key from Hermes")
+                else:
+                    log("FATAL: No MIMO API key found")
+                    return 1
+            else:
+                log("FATAL: MIMO_API_KEY not set and Hermes auth.json not found")
+                return 1
+        except Exception as e:
+            log(f"FATAL: Failed to load API key: {e}")
+            return 1
+
+    # Initialize components
+    from paper_sampler import PaperSampler
+    from llm_reward_generator import LLMRewardGenerator
+    from model_evaluator import ModelEvaluator
+
+    api_key = os.environ.get("MIMO_API_KEY", MIMO_API_KEY)
+    sampler = PaperSampler(POOL_DIR, WORK_DIR)
+    generator = LLMRewardGenerator(api_key, MIMO_BASE_URL, MIMO_MODEL)
+    evaluator = ModelEvaluator(PROJECT_ROOT, EVAL_EPISODES)
+
     log("=" * 70)
-    log("HRRL2 Stage 1 Reward Optimizer")
+    log("HRRL2 Stage 1 Reward Optimizer (LLM-Driven)")
     log(f"Runtime: {TOTAL_RUNTIME_HOURS} hours")
-    log(f"Timesteps per iteration: {TIMESTEPS_PER_ITER}")
-    log(f"Improvement threshold: {IMPROVEMENT_THRESHOLD*100:.0f}%")
-    log(f"Categories: {', '.join(CATEGORIES_PRIORITY)}")
+    log(f"Screening timesteps: {TIMESTEPS_SCREEN}")
+    log(f"Full training timesteps: {TIMESTEPS_FULL}")
+    log(f"Evaluation episodes: {EVAL_EPISODES}")
+    log(f"Improvement threshold: {IMPROVEMENT_THRESHOLD*100:.1f}%")
+    log(f"API: {MIMO_BASE_URL}")
+    log(f"Paper pool: {sampler.summary()['total']} methods, {len(sampler.remaining_categories())} categories")
     log("=" * 70)
 
     # Backup original env.py
     backup_env()
 
+    # Initialize CHANGELOG
+    changelog_path = PROJECT_ROOT / "CHANGELOG.md"
+    changelog_path.write_text(
+        "# HRRL2 Stage 1 Reward Optimization Changelog (LLM-Driven)\n\n"
+        f"Started: {datetime.now(timezone.utc).isoformat()}\n"
+        f"Runtime: {TOTAL_RUNTIME_HOURS} hours\n"
+        f"Screening timesteps: {TIMESTEPS_SCREEN}\n"
+        f"Full training timesteps: {TIMESTEPS_FULL}\n"
+        f"Evaluation episodes: {EVAL_EPISODES}\n\n",
+        encoding="utf-8"
+    )
+
     # Run baseline
-    baseline = run_baseline(TIMESTEPS_PER_ITER)
+    log("Running baseline training...")
+    baseline = evaluator.train_model(TIMESTEPS_FULL)
     if not baseline:
         log("FATAL: Baseline training failed")
         return 1
 
+    # Quick eval baseline
+    baseline_eval = evaluator.quick_evaluate(TIMESTEPS_FULL)
+    if baseline_eval:
+        baseline["completion_rate"] = baseline_eval.get("completion_rate", 0)
+        baseline["comprehensive_score"] = 0.5 * 0.5 + 0.3 * 0.5 + 0.2 * baseline.get("completion_rate", 0)
+
+    log(f"Baseline: reward={baseline['mean_reward']:.2f}, "
+        f"episodes={baseline['total_episodes']}, time={baseline['training_time_s']:.0f}s")
+
+    # Save baseline model
+    baseline_model_path = RESULTS_DIR / "best_model_v0.zip"
+    evaluator.train_model(TIMESTEPS_FULL, baseline_model_path)
+
+    # Write baseline to CHANGELOG
+    with open(changelog_path, "a", encoding="utf-8") as f:
+        f.write(
+            f"## v0 — Baseline [ACCEPTED]\n\n"
+            f"- Mean Reward: {baseline['mean_reward']:.2f}\n"
+            f"- Episodes: {baseline['total_episodes']}\n"
+            f"- Training Time: {baseline['training_time_s']:.0f}s\n\n"
+        )
+
     best_metrics = baseline.copy()
     best_version = 0
     version = 0
+    history = []
 
-    # Initialize CHANGELOG
-    changelog_path = PROJECT_ROOT / "CHANGELOG.md"
-    changelog_path.write_text(
-        "# HRRL2 Stage 1 Reward Optimization Changelog\n\n"
-        f"Started: {datetime.now(timezone.utc).isoformat()}\n"
-        f"Runtime: {TOTAL_RUNTIME_HOURS} hours\n"
-        f"Timesteps per iteration: {TIMESTEPS_PER_ITER}\n\n"
-        f"## v0 — Baseline [ACCEPTED]\n\n"
-        f"- Mean Reward: {baseline['mean_reward']:.2f}\n"
-        f"- Episodes: {baseline['total_episodes']}\n"
-        f"- Training Time: {baseline['training_time_s']:.0f}s\n\n",
-        encoding="utf-8"
-    )
-
-    # Build full modification list: predefined + dynamic variations
-    all_mods = list(REWARD_MODIFICATIONS)
-
-    # Generate dynamic variations of the best accepted modifications
-    # Vary lambda values, combine patterns, etc.
-    dynamic_variations = [
-        # Variations of F1 (best performer from Category F)
-        {"id": "F1v_lambda003", "category": "F_residual_aware_reward", "name": "F1 with lambda=0.03",
-         "description": "F1 residual penalty with weaker lambda (0.03 instead of 0.05)",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.03 * (target_handle_angle / (math.pi / 4)) ** 2
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        {"id": "F1v_lambda008", "category": "F_residual_aware_reward", "name": "F1 with lambda=0.08",
-         "description": "F1 residual penalty with stronger lambda (0.08 instead of 0.05)",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.08 * (target_handle_angle / (math.pi / 4)) ** 2
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        {"id": "F1v_lambda010", "category": "F_residual_aware_reward", "name": "F1 with lambda=0.10",
-         "description": "F1 residual penalty with strong lambda (0.10)",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0
-        elif current_error < 0.01: bonus_reward = 0.5
-        elif current_error < 0.02: bonus_reward = 0.2
-        smoothness_penalty = -0.05 * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.10 * (target_handle_angle / (math.pi / 4)) ** 2
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        # Variations of E1+E9 (hierarchical stages - best performer)
-        {"id": "E1v_fine_scale5x", "category": "E_hierarchical_reward", "name": "E1 with 5x fine-stage tracking",
-         "description": "E1 hierarchical but even stronger fine-stage tracking (5x instead of 3x original, 5x for fine)",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        if current_error > 0.05:
-            tracking_reward = -4.0 * current_error ** 2
-            smoothness_penalty = -0.02 * angular_velocity
-            bonus_reward = 0.0
-        elif current_error > 0.02:
-            tracking_reward = -3.0 * current_error ** 2
-            smoothness_penalty = -0.05 * angular_velocity
-            bonus_reward = 0.3
-        else:
-            tracking_reward = -6.0 * current_error ** 2
-            smoothness_penalty = -0.12 * angular_velocity
-            bonus_reward = 1.5 if current_error < 0.005 else 0.8
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.4 * error_reduction
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        {"id": "E1v_no_fine_smooth", "category": "E_hierarchical_reward", "name": "E1 without fine-stage smoothness penalty",
-         "description": "E1 hierarchical but remove smoothness penalty in fine stage to allow faster convergence",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        if current_error > 0.05:
-            tracking_reward = -3.0 * current_error ** 2
-            smoothness_penalty = -0.02 * angular_velocity
-            bonus_reward = 0.0
-        elif current_error > 0.02:
-            tracking_reward = -2.0 * current_error ** 2
-            smoothness_penalty = -0.05 * angular_velocity
-            bonus_reward = 0.3
-        else:
-            tracking_reward = -5.0 * current_error ** 2
-            smoothness_penalty = 0.0
-            bonus_reward = 1.0 if current_error < 0.005 else 0.5
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        # E2 variations (progressive difficulty - huge improvement)
-        {"id": "E2v_fast_ramp30", "category": "E_hierarchical_reward", "name": "E2 with faster ramp (30 episodes)",
-         "description": "E2 progressive difficulty but ramp up over 30 episodes instead of 50",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        progress = min(1.0, self.epoch_num / 30.0)
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
-        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
-        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
-        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        {"id": "E2v_slow_ramp80", "category": "E_hierarchical_reward", "name": "E2 with slower ramp (80 episodes)",
-         "description": "E2 progressive difficulty but ramp up over 80 episodes for more exploration",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        progress = min(1.0, self.epoch_num / 80.0)
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
-        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
-        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
-        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        {"id": "E2v_bonus2x", "category": "E_hierarchical_reward", "name": "E2 with 2x bonus scaling",
-         "description": "E2 progressive difficulty with stronger bonus scaling (up to 2x instead of 0.5x)",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        progress = min(1.0, self.epoch_num / 50.0)
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0 + 1.0 * progress
-        elif current_error < 0.01: bonus_reward = 0.5 + 0.5 * progress
-        elif current_error < 0.02: bonus_reward = 0.2 + 0.2 * progress
-        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        # F1+E2 combination (both accepted patterns)
-        {"id": "FE_combo", "category": "F_residual_aware_reward", "name": "F1 residual + E2 progressive combo",
-         "description": "Combine F1 squared action penalty with E2 progressive difficulty",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        progress = min(1.0, self.epoch_num / 50.0)
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
-        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
-        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
-        smoothness_penalty = -(0.02 + 0.04 * progress) * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        # F1 squared action penalty
-        action_penalty = -0.05 * (target_handle_angle / (math.pi / 4)) ** 2
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        # Stronger improvement reward
-        {"id": "E2v_imp50", "category": "E_hierarchical_reward", "name": "E2 with stronger improvement reward (0.5)",
-         "description": "E2 progressive with improvement reward weight 0.5 instead of 0.3",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        progress = min(1.0, self.epoch_num / 50.0)
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
-        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
-        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
-        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.5 * error_reduction
-        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        # Lower tracking penalty cap
-        {"id": "E2v_cap1", "category": "E_hierarchical_reward", "name": "E2 with lower tracking cap (1.0)",
-         "description": "E2 progressive with tracking penalty capped at 1.0 instead of 2.0",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        progress = min(1.0, self.epoch_num / 50.0)
-        tracking_reward = -min(current_error**2, 1.0)
-        bonus_reward = 0.0
-        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
-        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
-        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
-        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        # Quadratic tracking in coarse stage
-        {"id": "E1v_quad_coarse", "category": "E_hierarchical_reward", "name": "E1 with quadratic coarse tracking",
-         "description": "E1 hierarchical with quadratic (not linear) tracking in coarse stage",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        if current_error > 0.05:
-            tracking_reward = -5.0 * current_error ** 2
-            smoothness_penalty = -0.01 * angular_velocity
-            bonus_reward = 0.0
-        elif current_error > 0.02:
-            tracking_reward = -3.0 * current_error ** 2
-            smoothness_penalty = -0.05 * angular_velocity
-            bonus_reward = 0.3
-        else:
-            tracking_reward = -5.0 * current_error ** 2
-            smoothness_penalty = -0.1 * angular_velocity
-            bonus_reward = 1.0 if current_error < 0.005 else 0.5
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
-        # E2 with bonus only for very small errors
-        {"id": "E2v_tight_bonus", "category": "E_hierarchical_reward", "name": "E2 with tighter bonus thresholds",
-         "description": "E2 progressive but bonus only for very small errors (<0.003, <0.005, <0.01)",
-         "code": """
-    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
-        state_last_raw = self.__observation_reduction(state_last)
-        state_raw = self.__observation_reduction(state)
-        current_error = abs(state_raw[0])
-        angular_velocity = abs(state_raw[2])
-        progress = min(1.0, self.epoch_num / 50.0)
-        tracking_reward = -min(current_error**2, 2.0)
-        bonus_reward = 0.0
-        if current_error < 0.003: bonus_reward = 2.0 + 1.0 * progress
-        elif current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
-        elif current_error < 0.01: bonus_reward = 0.3 + 0.2 * progress
-        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
-        improvement_reward = 0.0
-        error_reduction = abs(state_last_raw[0]) - current_error
-        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
-        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
-        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
-        return reward"""},
+    # Phase-based flow
+    phases = [
+        ("discovery", "Screening all S-priority categories", 2),
+        ("deep_dive", "Deep dive best category", 4),
+        ("expand", "Expand to A/B categories", 3),
     ]
-    all_mods.extend(dynamic_variations)
 
-    # Main optimization loop — runs for full 5 hours
+    current_phase = 0
+    consecutive_failures = 0
+    best_category = None
+
+    # Main loop
     while True:
-        # Check time
         elapsed_hours = (time.time() - start_time) / 3600
         remaining_hours = TOTAL_RUNTIME_HOURS - elapsed_hours
-        if remaining_hours < 0.15:  # ~9 minutes left
+        if remaining_hours < 0.15:
             log(f"Time's up! Elapsed: {elapsed_hours:.1f}h")
             break
 
-        # Get next modification (cycle through all_mods if needed)
-        mod_index = version % len(all_mods)
-        mod = all_mods[mod_index]
+        # Determine phase
+        if current_phase >= len(phases):
+            current_phase = len(phases) - 1  # Stay in last phase
 
-        version += 1
+        phase_name, phase_desc, batch_per_category = phases[current_phase]
         log(f"\n{'='*70}")
-        log(f"v{version}: {mod['id']} — {mod['name']}")
-        log(f"Category: {mod['category']} | Remaining: {remaining_hours:.1f}h")
+        log(f"Phase: {phase_name} — {phase_desc}")
+        log(f"Remaining: {remaining_hours:.1f}h | Version: {version}")
+        log(f"Best so far: v{best_version} ({best_metrics['mean_reward']:.2f})")
         log(f"{'='*70}")
 
-        # Apply modification
-        if not apply_reward_modification(mod):
-            log(f"SKIP: Failed to apply modification")
-            version -= 1
-            continue
-
-        # Train and evaluate
-        metrics = train_and_evaluate(TIMESTEPS_PER_ITER)
-        if not metrics:
-            log(f"SKIP: Training failed")
-            restore_env()
-            version -= 1
-            continue
-
-        # Compare with BASELINE (not current best) — accept all better than baseline
-        baseline_improvement = (metrics["mean_reward"] - baseline["mean_reward"]) / abs(baseline["mean_reward"])
-        best_improvement = (metrics["mean_reward"] - best_metrics["mean_reward"]) / abs(best_metrics["mean_reward"])
-
-        log(f"Result: reward={metrics['mean_reward']:.2f} "
-            f"vs baseline={baseline['mean_reward']:.2f} ({baseline_improvement*100:+.1f}%) "
-            f"vs best={best_metrics['mean_reward']:.2f} ({best_improvement*100:+.1f}%)")
-
-        # Accept if better than baseline
-        if baseline_improvement > IMPROVEMENT_THRESHOLD:
-            log(f"ACCEPTED: {baseline_improvement*100:+.1f}% better than baseline")
-            commit_and_push(version, mod, metrics, baseline)
-            update_changelog(version, mod, metrics, baseline, accepted=True)
-            # Update best if this is the new best
-            if metrics["mean_reward"] > best_metrics["mean_reward"]:
-                best_metrics = metrics.copy()
-                best_version = version
+        # Get next method batch
+        if phase_name == "deep_dive" and best_category:
+            batch = sampler.get_next_batch(1, preferred_category=best_category)
         else:
-            log(f"REJECTED: {baseline_improvement*100:+.1f}% vs baseline (threshold: {IMPROVEMENT_THRESHOLD*100:.0f}%)")
-            rollback(version, mod, metrics, baseline)
-            update_changelog(version, mod, metrics, baseline, accepted=False)
+            batch = sampler.get_next_batch(1)
+
+        if not batch:
+            log("No more methods available, moving to next phase")
+            current_phase += 1
+            consecutive_failures = 0
+            continue
+
+        method = batch[0]
+        version += 1
+
+        log(f"v{version}: {method.get('method_name', 'N/A')}")
+        log(f"  Category: {method.get('category', 'N/A')}")
+        log(f"  Core idea: {method.get('core_idea', 'N/A')[:100]}")
+        log(f"  Formula: {method.get('reward_formula', 'N/A')}")
+        if method.get("_paper_md"):
+            log(f"  Paper: loaded ({len(method['_paper_md'])} chars)")
+        else:
+            log(f"  Paper: not available")
+
+        # Generate modification
+        current_code = get_current_reward_code()
+        error_feedback = None
+
+        for attempt in range(3):  # Max 3 attempts to fix syntax
+            mod = generator.generate_modification(
+                current_code, method, ENV_CONTEXT, baseline, history, error_feedback
+            )
+
+            if not mod:
+                log(f"  LLM generation failed (attempt {attempt+1})")
+                continue
+
+            # Check syntax
+            syntax_error = check_syntax(mod["code"])
+            if syntax_error:
+                log(f"  Syntax error (attempt {attempt+1}): {syntax_error[:80]}")
+                error_feedback = syntax_error
+                continue
+
+            break
+        else:
+            log(f"  SKIP: Failed to generate valid code after 3 attempts")
+            sampler.mark_used(method["method_id"], method.get("category", ""), "syntax_fail")
+            consecutive_failures += 1
+            if consecutive_failures >= 5:
+                current_phase += 1
+                consecutive_failures = 0
+            continue
+
+        # Apply modification
+        if not apply_reward_code(mod["code"]):
+            log(f"  SKIP: Failed to apply code")
+            sampler.mark_used(method["method_id"], method.get("category", ""), "apply_fail")
+            continue
+
+        # Screening: quick train
+        log(f"  Screening ({TIMESTEPS_SCREEN} steps)...")
+        screen_metrics = evaluator.quick_evaluate(TIMESTEPS_SCREEN)
+        if not screen_metrics:
+            log(f"  SKIP: Screening failed")
+            restore_env()
+            sampler.mark_used(method["method_id"], method.get("category", ""), "screen_fail")
+            continue
+
+        screen_improvement = (screen_metrics["mean_reward"] - baseline["mean_reward"]) / abs(baseline["mean_reward"])
+        log(f"  Screen: reward={screen_metrics['mean_reward']:.2f} ({screen_improvement*100:+.1f}%), "
+            f"completion={screen_metrics.get('completion_rate', 0):.0%}")
+
+        # Reject if screening shows significant regression
+        if screen_improvement < -0.10:  # More than 10% regression
+            log(f"  REJECTED: Screen regression ({screen_improvement*100:+.1f}%)")
+            restore_env()
+            sampler.mark_used(method["method_id"], method.get("category", ""), "screen_reject")
+            history.append({
+                "version": version,
+                "name": mod.get("name", ""),
+                "mean_reward": screen_metrics["mean_reward"],
+                "change_pct": screen_improvement * 100,
+                "accepted": False,
+            })
+            consecutive_failures += 1
+            if consecutive_failures >= 5:
+                current_phase += 1
+                consecutive_failures = 0
+            continue
+
+        # Full training
+        log(f"  Full training ({TIMESTEPS_FULL} steps)...")
+        model_path = RESULTS_DIR / f"model_v{version}.zip"
+        full_metrics = evaluator.train_model(TIMESTEPS_FULL, save_path=model_path)
+        if not full_metrics:
+            log(f"  SKIP: Full training failed")
+            restore_env()
+            sampler.mark_used(method["method_id"], method.get("category", ""), "train_fail")
+            continue
+
+        # Full evaluation
+        full_eval = evaluator.evaluate_model(model_path)
+        if full_eval:
+            full_metrics.update({
+                "completion_rate": full_eval["completion_rate"],
+                "comprehensive_score": full_eval["comprehensive_score"],
+                "accuracy": full_eval["accuracy"],
+                "stability": full_eval["stability"],
+                "efficiency": full_eval["efficiency"],
+            })
+
+        full_improvement = (full_metrics["mean_reward"] - baseline["mean_reward"]) / abs(baseline["mean_reward"])
+
+        log(f"  Full: reward={full_metrics['mean_reward']:.2f} ({full_improvement*100:+.1f}%), "
+            f"completion={full_metrics.get('completion_rate', 0):.1%}, "
+            f"score={full_metrics.get('comprehensive_score', 0):.4f}")
+
+        # Accept/reject
+        if full_improvement > IMPROVEMENT_THRESHOLD:
+            log(f"  ACCEPTED: {full_improvement*100:+.1f}% improvement")
+            accepted = True
+            sampler.mark_used(method["method_id"], method.get("category", ""), "accepted")
+
+            # Save as best model
+            best_model_path = RESULTS_DIR / f"best_model_v{version}.zip"
+            if model_path.exists():
+                shutil.copy2(model_path, best_model_path)
+
+            # Update best
+            if full_metrics["mean_reward"] > best_metrics["mean_reward"]:
+                best_metrics = full_metrics.copy()
+                best_version = version
+                best_category = method.get("category")
+
+            # Commit and push
+            commit_and_push(version, mod, full_metrics, baseline)
+            consecutive_failures = 0
+
+            # Phase transition: if we found a good result in discovery, deep dive it
+            if current_phase == 0 and full_improvement > 0.05:
+                current_phase = 1  # Move to deep_dive
+                best_category = method.get("category")
+                log(f"  Phase transition: discovery → deep_dive ({best_category})")
+        else:
+            log(f"  REJECTED: {full_improvement*100:+.1f}% improvement (threshold: {IMPROVEMENT_THRESHOLD*100:.1f}%)")
+            accepted = False
+            restore_env()
+            sampler.mark_used(method["method_id"], method.get("category", ""), "rejected")
+            consecutive_failures += 1
+
+            # Phase transition: too many failures, expand to other categories
+            if consecutive_failures >= 3 and current_phase == 1:
+                current_phase = 2  # Move to expand
+                log(f"  Phase transition: deep_dive → expand")
+
+        # Record history
+        history.append({
+            "version": version,
+            "name": mod.get("name", ""),
+            "mean_reward": full_metrics["mean_reward"],
+            "change_pct": full_improvement * 100,
+            "accepted": accepted,
+        })
+
+        # Save results
+        save_results_csv(version, mod, full_metrics, baseline, accepted)
+        save_results_json(version, mod, full_metrics, baseline, accepted)
+        update_changelog(version, mod, full_metrics, baseline, accepted)
 
     # Final summary
     elapsed_total = (time.time() - start_time) / 3600
@@ -1029,24 +579,21 @@ def main():
     log(f"Best reward: {best_metrics['mean_reward']:.2f} (baseline: {baseline['mean_reward']:.2f})")
     overall_improvement = (best_metrics["mean_reward"] - baseline["mean_reward"]) / abs(baseline["mean_reward"]) * 100
     log(f"Overall improvement: {overall_improvement:+.1f}%")
+    log(f"Best completion rate: {best_metrics.get('completion_rate', 0):.1%}")
+    log(f"Best comprehensive score: {best_metrics.get('comprehensive_score', 0):.4f}")
+    log(f"Results saved to: {RESULTS_DIR}")
     log(f"{'='*70}")
 
     # Push final changelog
-    run_git(["add", "CHANGELOG.md"])
+    run_git(["add", "CHANGELOG.md", "optimizer_results/"])
     run_git(["commit", "-m", f"changelog: optimization complete ({version} versions, {elapsed_total:.1f}h)"])
     run_git(["push", "origin", "main"])
 
-    # Tag best version
-    if best_version > 0:
-        log(f"Best version is v{best_version} (tag already set)")
-
-    # Restore best version if it's not the last one
-    if best_version > 0 and best_version < version:
-        log(f"Restoring best version v{best_version}...")
-        run_git(["checkout", f"v{best_version}", "--", "env.py"])
-        run_git(["add", "env.py"])
-        run_git(["commit", "-m", f"restore: best version v{best_version}"])
-        run_git(["push", "origin", "main"])
+    # Print sampler summary
+    summary = sampler.summary()
+    log(f"\nMethod pool usage:")
+    for cat, stats in summary["by_category"].items():
+        log(f"  {cat}: {stats['used']}/{stats['total']} used")
 
     return 0
 
