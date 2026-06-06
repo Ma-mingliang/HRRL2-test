@@ -556,9 +556,7 @@ def train_and_evaluate(timesteps: int) -> Optional[dict]:
 
 def commit_and_push(version: int, mod: dict, metrics: dict, baseline_metrics: dict):
     """Commit the improved reward function and push to GitHub."""
-    # Calculate improvement
-    improvement = (baseline_metrics["mean_reward"] - metrics["mean_reward"]) / abs(baseline_metrics["mean_reward"]) * 100
-    # Note: for reward, higher is better (less negative), so improvement > 0 means better
+    improvement = (metrics["mean_reward"] - baseline_metrics["mean_reward"]) / abs(baseline_metrics["mean_reward"]) * 100
 
     run_git(["add", "env.py"])
     commit_msg = (
@@ -568,12 +566,12 @@ def commit_and_push(version: int, mod: dict, metrics: dict, baseline_metrics: di
         f"Description: {mod['description']}\n\n"
         f"Metrics (last 20 episodes):\n"
         f"  Mean reward: {metrics['mean_reward']:.2f} (baseline: {baseline_metrics['mean_reward']:.2f})\n"
-        f"  Improvement: {improvement:+.1f}%\n"
+        f"  Improvement vs baseline: {improvement:+.1f}%\n"
         f"  Episodes: {metrics['total_episodes']}\n"
         f"  Training time: {metrics['training_time_s']:.0f}s"
     )
     run_git(["commit", "-m", commit_msg])
-    run_git(["tag", f"v{version}"])
+    run_git(["tag", "-f", f"v{version}"])
     run_git(["push", "origin", "main", "--tags"])
     log(f"Committed and pushed v{version}")
 
@@ -582,7 +580,7 @@ def rollback(version: int, mod: dict, metrics: dict, baseline_metrics: dict):
     """Rollback to previous env.py."""
     restore_env()
     run_git(["checkout", "env.py"])
-    log(f"Rolled back v{version} ({mod['id']}): no improvement")
+    log(f"Rolled back v{version} ({mod['id']}): not better than baseline")
 
 
 def update_changelog(version: int, mod: dict, metrics: dict, baseline_metrics: dict, accepted: bool):
@@ -591,7 +589,7 @@ def update_changelog(version: int, mod: dict, metrics: dict, baseline_metrics: d
     if not changelog.exists():
         changelog.write_text("# HRRL2 Stage 1 Reward Optimization Changelog\n\n", encoding="utf-8")
 
-    improvement = (baseline_metrics["mean_reward"] - metrics["mean_reward"]) / abs(baseline_metrics["mean_reward"]) * 100
+    improvement = (metrics["mean_reward"] - baseline_metrics["mean_reward"]) / abs(baseline_metrics["mean_reward"]) * 100
     status = "ACCEPTED" if accepted else "REJECTED"
 
     entry = (
@@ -600,7 +598,7 @@ def update_changelog(version: int, mod: dict, metrics: dict, baseline_metrics: d
         f"- **ID**: {mod['id']}\n"
         f"- **Description**: {mod['description']}\n"
         f"- **Mean Reward**: {metrics['mean_reward']:.2f} "
-        f"(baseline: {baseline_metrics['mean_reward']:.2f}, change: {improvement:+.1f}%)\n"
+        f"(original baseline: {baseline_metrics['mean_reward']:.2f}, change: {improvement:+.1f}%)\n"
         f"- **Episodes**: {metrics['total_episodes']}\n"
         f"- **Training Time**: {metrics['training_time_s']:.0f}s\n"
         f"- **Timestamp**: {datetime.now(timezone.utc).isoformat()}\n\n"
@@ -663,14 +661,321 @@ def main():
         encoding="utf-8"
     )
 
-    # Main optimization loop
-    for mod in REWARD_MODIFICATIONS:
+    # Build full modification list: predefined + dynamic variations
+    all_mods = list(REWARD_MODIFICATIONS)
+
+    # Generate dynamic variations of the best accepted modifications
+    # Vary lambda values, combine patterns, etc.
+    dynamic_variations = [
+        # Variations of F1 (best performer from Category F)
+        {"id": "F1v_lambda003", "category": "F_residual_aware_reward", "name": "F1 with lambda=0.03",
+         "description": "F1 residual penalty with weaker lambda (0.03 instead of 0.05)",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        tracking_reward = -min(current_error**2, 2.0)
+        bonus_reward = 0.0
+        if current_error < 0.005: bonus_reward = 1.0
+        elif current_error < 0.01: bonus_reward = 0.5
+        elif current_error < 0.02: bonus_reward = 0.2
+        smoothness_penalty = -0.05 * angular_velocity
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        action_penalty = -0.03 * (target_handle_angle / (math.pi / 4)) ** 2
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        {"id": "F1v_lambda008", "category": "F_residual_aware_reward", "name": "F1 with lambda=0.08",
+         "description": "F1 residual penalty with stronger lambda (0.08 instead of 0.05)",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        tracking_reward = -min(current_error**2, 2.0)
+        bonus_reward = 0.0
+        if current_error < 0.005: bonus_reward = 1.0
+        elif current_error < 0.01: bonus_reward = 0.5
+        elif current_error < 0.02: bonus_reward = 0.2
+        smoothness_penalty = -0.05 * angular_velocity
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        action_penalty = -0.08 * (target_handle_angle / (math.pi / 4)) ** 2
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        {"id": "F1v_lambda010", "category": "F_residual_aware_reward", "name": "F1 with lambda=0.10",
+         "description": "F1 residual penalty with strong lambda (0.10)",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        tracking_reward = -min(current_error**2, 2.0)
+        bonus_reward = 0.0
+        if current_error < 0.005: bonus_reward = 1.0
+        elif current_error < 0.01: bonus_reward = 0.5
+        elif current_error < 0.02: bonus_reward = 0.2
+        smoothness_penalty = -0.05 * angular_velocity
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        action_penalty = -0.10 * (target_handle_angle / (math.pi / 4)) ** 2
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        # Variations of E1+E9 (hierarchical stages - best performer)
+        {"id": "E1v_fine_scale5x", "category": "E_hierarchical_reward", "name": "E1 with 5x fine-stage tracking",
+         "description": "E1 hierarchical but even stronger fine-stage tracking (5x instead of 3x original, 5x for fine)",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        if current_error > 0.05:
+            tracking_reward = -4.0 * current_error ** 2
+            smoothness_penalty = -0.02 * angular_velocity
+            bonus_reward = 0.0
+        elif current_error > 0.02:
+            tracking_reward = -3.0 * current_error ** 2
+            smoothness_penalty = -0.05 * angular_velocity
+            bonus_reward = 0.3
+        else:
+            tracking_reward = -6.0 * current_error ** 2
+            smoothness_penalty = -0.12 * angular_velocity
+            bonus_reward = 1.5 if current_error < 0.005 else 0.8
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.4 * error_reduction
+        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        {"id": "E1v_no_fine_smooth", "category": "E_hierarchical_reward", "name": "E1 without fine-stage smoothness penalty",
+         "description": "E1 hierarchical but remove smoothness penalty in fine stage to allow faster convergence",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        if current_error > 0.05:
+            tracking_reward = -3.0 * current_error ** 2
+            smoothness_penalty = -0.02 * angular_velocity
+            bonus_reward = 0.0
+        elif current_error > 0.02:
+            tracking_reward = -2.0 * current_error ** 2
+            smoothness_penalty = -0.05 * angular_velocity
+            bonus_reward = 0.3
+        else:
+            tracking_reward = -5.0 * current_error ** 2
+            smoothness_penalty = 0.0
+            bonus_reward = 1.0 if current_error < 0.005 else 0.5
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        # E2 variations (progressive difficulty - huge improvement)
+        {"id": "E2v_fast_ramp30", "category": "E_hierarchical_reward", "name": "E2 with faster ramp (30 episodes)",
+         "description": "E2 progressive difficulty but ramp up over 30 episodes instead of 50",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        progress = min(1.0, self.epoch_num / 30.0)
+        tracking_reward = -min(current_error**2, 2.0)
+        bonus_reward = 0.0
+        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
+        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
+        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
+        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        {"id": "E2v_slow_ramp80", "category": "E_hierarchical_reward", "name": "E2 with slower ramp (80 episodes)",
+         "description": "E2 progressive difficulty but ramp up over 80 episodes for more exploration",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        progress = min(1.0, self.epoch_num / 80.0)
+        tracking_reward = -min(current_error**2, 2.0)
+        bonus_reward = 0.0
+        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
+        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
+        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
+        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        {"id": "E2v_bonus2x", "category": "E_hierarchical_reward", "name": "E2 with 2x bonus scaling",
+         "description": "E2 progressive difficulty with stronger bonus scaling (up to 2x instead of 0.5x)",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        progress = min(1.0, self.epoch_num / 50.0)
+        tracking_reward = -min(current_error**2, 2.0)
+        bonus_reward = 0.0
+        if current_error < 0.005: bonus_reward = 1.0 + 1.0 * progress
+        elif current_error < 0.01: bonus_reward = 0.5 + 0.5 * progress
+        elif current_error < 0.02: bonus_reward = 0.2 + 0.2 * progress
+        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        # F1+E2 combination (both accepted patterns)
+        {"id": "FE_combo", "category": "F_residual_aware_reward", "name": "F1 residual + E2 progressive combo",
+         "description": "Combine F1 squared action penalty with E2 progressive difficulty",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        progress = min(1.0, self.epoch_num / 50.0)
+        tracking_reward = -min(current_error**2, 2.0)
+        bonus_reward = 0.0
+        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
+        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
+        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
+        smoothness_penalty = -(0.02 + 0.04 * progress) * angular_velocity
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        # F1 squared action penalty
+        action_penalty = -0.05 * (target_handle_angle / (math.pi / 4)) ** 2
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        # Stronger improvement reward
+        {"id": "E2v_imp50", "category": "E_hierarchical_reward", "name": "E2 with stronger improvement reward (0.5)",
+         "description": "E2 progressive with improvement reward weight 0.5 instead of 0.3",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        progress = min(1.0, self.epoch_num / 50.0)
+        tracking_reward = -min(current_error**2, 2.0)
+        bonus_reward = 0.0
+        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
+        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
+        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
+        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.5 * error_reduction
+        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        # Lower tracking penalty cap
+        {"id": "E2v_cap1", "category": "E_hierarchical_reward", "name": "E2 with lower tracking cap (1.0)",
+         "description": "E2 progressive with tracking penalty capped at 1.0 instead of 2.0",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        progress = min(1.0, self.epoch_num / 50.0)
+        tracking_reward = -min(current_error**2, 1.0)
+        bonus_reward = 0.0
+        if current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
+        elif current_error < 0.01: bonus_reward = 0.5 + 0.3 * progress
+        elif current_error < 0.02: bonus_reward = 0.2 + 0.1 * progress
+        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        # Quadratic tracking in coarse stage
+        {"id": "E1v_quad_coarse", "category": "E_hierarchical_reward", "name": "E1 with quadratic coarse tracking",
+         "description": "E1 hierarchical with quadratic (not linear) tracking in coarse stage",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        if current_error > 0.05:
+            tracking_reward = -5.0 * current_error ** 2
+            smoothness_penalty = -0.01 * angular_velocity
+            bonus_reward = 0.0
+        elif current_error > 0.02:
+            tracking_reward = -3.0 * current_error ** 2
+            smoothness_penalty = -0.05 * angular_velocity
+            bonus_reward = 0.3
+        else:
+            tracking_reward = -5.0 * current_error ** 2
+            smoothness_penalty = -0.1 * angular_velocity
+            bonus_reward = 1.0 if current_error < 0.005 else 0.5
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        action_penalty = -0.02 * abs(target_handle_angle) / (math.pi / 4)
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+        # E2 with bonus only for very small errors
+        {"id": "E2v_tight_bonus", "category": "E_hierarchical_reward", "name": "E2 with tighter bonus thresholds",
+         "description": "E2 progressive but bonus only for very small errors (<0.003, <0.005, <0.01)",
+         "code": """
+    def __calculate_reward(self, state_last, state, target_handle_angle=0.0):
+        state_last_raw = self.__observation_reduction(state_last)
+        state_raw = self.__observation_reduction(state)
+        current_error = abs(state_raw[0])
+        angular_velocity = abs(state_raw[2])
+        progress = min(1.0, self.epoch_num / 50.0)
+        tracking_reward = -min(current_error**2, 2.0)
+        bonus_reward = 0.0
+        if current_error < 0.003: bonus_reward = 2.0 + 1.0 * progress
+        elif current_error < 0.005: bonus_reward = 1.0 + 0.5 * progress
+        elif current_error < 0.01: bonus_reward = 0.3 + 0.2 * progress
+        smoothness_penalty = -(0.02 + 0.06 * progress) * angular_velocity
+        improvement_reward = 0.0
+        error_reduction = abs(state_last_raw[0]) - current_error
+        if error_reduction > 0: improvement_reward = 0.3 * error_reduction
+        action_penalty = -(0.01 + 0.02 * progress) * abs(target_handle_angle) / (math.pi / 4)
+        reward = tracking_reward + bonus_reward + smoothness_penalty + improvement_reward + action_penalty
+        return reward"""},
+    ]
+    all_mods.extend(dynamic_variations)
+
+    # Main optimization loop — runs for full 5 hours
+    while True:
         # Check time
         elapsed_hours = (time.time() - start_time) / 3600
         remaining_hours = TOTAL_RUNTIME_HOURS - elapsed_hours
         if remaining_hours < 0.15:  # ~9 minutes left
             log(f"Time's up! Elapsed: {elapsed_hours:.1f}h")
             break
+
+        # Get next modification (cycle through all_mods if needed)
+        mod_index = version % len(all_mods)
+        mod = all_mods[mod_index]
 
         version += 1
         log(f"\n{'='*70}")
@@ -692,26 +997,27 @@ def main():
             version -= 1
             continue
 
-        # Compare with best
-        # Reward: higher is better (less negative)
-        improvement = (best_metrics["mean_reward"] - metrics["mean_reward"]) / abs(best_metrics["mean_reward"])
-        # Note: since rewards are negative, "improvement" means less negative (higher)
-        # So we check if metrics["mean_reward"] > best_metrics["mean_reward"]
-        actual_improvement = (metrics["mean_reward"] - best_metrics["mean_reward"]) / abs(best_metrics["mean_reward"])
+        # Compare with BASELINE (not current best) — accept all better than baseline
+        baseline_improvement = (metrics["mean_reward"] - baseline["mean_reward"]) / abs(baseline["mean_reward"])
+        best_improvement = (metrics["mean_reward"] - best_metrics["mean_reward"]) / abs(best_metrics["mean_reward"])
 
-        log(f"Result: reward={metrics['mean_reward']:.2f} vs best={best_metrics['mean_reward']:.2f} "
-            f"(change: {actual_improvement*100:+.1f}%)")
+        log(f"Result: reward={metrics['mean_reward']:.2f} "
+            f"vs baseline={baseline['mean_reward']:.2f} ({baseline_improvement*100:+.1f}%) "
+            f"vs best={best_metrics['mean_reward']:.2f} ({best_improvement*100:+.1f}%)")
 
-        if actual_improvement > IMPROVEMENT_THRESHOLD:
-            log(f"ACCEPTED: {actual_improvement*100:.1f}% improvement > {IMPROVEMENT_THRESHOLD*100:.0f}% threshold")
-            commit_and_push(version, mod, metrics, best_metrics)
-            update_changelog(version, mod, metrics, best_metrics, accepted=True)
-            best_metrics = metrics.copy()
-            best_version = version
+        # Accept if better than baseline
+        if baseline_improvement > IMPROVEMENT_THRESHOLD:
+            log(f"ACCEPTED: {baseline_improvement*100:+.1f}% better than baseline")
+            commit_and_push(version, mod, metrics, baseline)
+            update_changelog(version, mod, metrics, baseline, accepted=True)
+            # Update best if this is the new best
+            if metrics["mean_reward"] > best_metrics["mean_reward"]:
+                best_metrics = metrics.copy()
+                best_version = version
         else:
-            log(f"REJECTED: {actual_improvement*100:.1f}% < {IMPROVEMENT_THRESHOLD*100:.0f}% threshold")
-            rollback(version, mod, metrics, best_metrics)
-            update_changelog(version, mod, metrics, best_metrics, accepted=False)
+            log(f"REJECTED: {baseline_improvement*100:+.1f}% vs baseline (threshold: {IMPROVEMENT_THRESHOLD*100:.0f}%)")
+            rollback(version, mod, metrics, baseline)
+            update_changelog(version, mod, metrics, baseline, accepted=False)
 
     # Final summary
     elapsed_total = (time.time() - start_time) / 3600
