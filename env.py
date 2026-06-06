@@ -842,7 +842,7 @@ class Attitude_control_stage1(gym.Env):
         p.setTimeStep(self.cycle)
         
         self.max_step_num = 1000
-        self.min_success_steps = 300
+        self.min_success_steps = 1000
         self.angle_error = 0
         self.angle_error_csv = []
         

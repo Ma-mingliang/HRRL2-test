@@ -36,8 +36,8 @@ WORK_DIR = PROJECT_ROOT / "optimizer_work"
 RESULTS_DIR = PROJECT_ROOT / "optimizer_results"
 
 TOTAL_RUNTIME_HOURS = 5
-TIMESTEPS_SCREEN = 30000   # Screening: quick train
-TIMESTEPS_FULL = 50000     # Full: standard train
+TIMESTEPS_SCREEN = 50000   # Screening: quick train
+TIMESTEPS_FULL = 100000    # Full: standard train
 EVAL_EPISODES = 50         # Evaluation episodes
 IMPROVEMENT_THRESHOLD = 0.001  # 0.1% improvement to accept
 
